@@ -6,17 +6,21 @@
 
 This specification defines the design and implementation specifications for the infrastructure of the Azure AI Foundry Agent Service (FAS) pooled multi-tenant approach. It assumes automated deployment through Infrastructure as Code (IaC) using Bicep.
 
+The system adopts a container-based application architecture and is deployed as microservices using Azure Container Apps. This achieves high scalability, availability, and operability.
+
 ## 2. Architecture Principles
 
 ### 2.1 Resource Sharing Strategy
 - **Single Project Sharing**: Accommodate multiple tenants in one FAS project
 - **Logical Isolation**: Maintain boundaries through tags, RBAC/ABAC, and partition keys
 - **Security First**: Multi-layered defense based on Zero Trust principles
+- **Containerization**: Microservice architecture using Azure Container Apps
 
 ### 2.2 Bicep Design Principles
 - **Modular Design**: Separate Bicep modules by functionality
 - **Parameterization**: Externalize tenant-specific configurations
 - **Conditional Deployment**: Flexible resource configuration based on environment and tenant requirements
+- **Container Integration**: Integrated deployment of Container Apps and Container Registry
 
 ## 3. Resource Configuration
 
@@ -250,7 +254,178 @@ resource tenantKeyVaults 'Microsoft.KeyVault/vaults@2023-07-01' = [for tenant in
 }]
 ```
 
-### 3.8 API Management Configuration
+### 3.8 Container Apps Configuration
+
+```bicep
+// Container Registry
+resource containerRegistry 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
+  name: 'acr${replace(projectName, '-', '')}${environment}'
+  location: location
+  sku: {
+    name: 'Basic'
+  }
+  properties: {
+    adminUserEnabled: false
+    publicNetworkAccess: 'Enabled'
+  }
+  identity: {
+    type: 'SystemAssigned'
+  }
+  tags: {
+    tenantScope: 'shared'
+  }
+}
+
+// Container Apps Environment
+resource containerAppsEnvironment 'Microsoft.App/managedEnvironments@2023-05-01' = {
+  name: 'cae-${projectName}-${environment}'
+  location: location
+  properties: {
+    appLogsConfiguration: {
+      destination: 'log-analytics'
+      logAnalyticsConfiguration: {
+        customerId: logAnalyticsWorkspace.properties.customerId
+        sharedKey: logAnalyticsWorkspace.listKeys().primarySharedKey
+      }
+    }
+  }
+  tags: {
+    tenantScope: 'shared'
+  }
+}
+
+// Container App for AI Foundry Agent Service
+resource agentServiceContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
+  name: 'ca-${projectName}-${environment}'
+  location: location
+  properties: {
+    managedEnvironmentId: containerAppsEnvironment.id
+    configuration: {
+      activeRevisionsMode: 'Single'
+      ingress: {
+        external: true
+        targetPort: 80
+        corsPolicy: {
+          allowedOrigins: ['*']
+          allowedMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
+          allowedHeaders: ['*']
+          allowCredentials: false
+        }
+      }
+      registries: [
+        {
+          server: containerRegistry.properties.loginServer
+          identity: containerAppsEnvironment.identity.principalId
+        }
+      ]
+      secrets: [
+        {
+          name: 'cosmos-connection-string'
+          value: cosmosAccount.listConnectionStrings().connectionStrings[0].connectionString
+        }
+        {
+          name: 'storage-connection-string'
+          value: 'DefaultEndpointsProtocol=https;AccountName=${storageAccount.name};AccountKey=${storageAccount.listKeys().keys[0].value};EndpointSuffix=core.windows.net'
+        }
+        {
+          name: 'ai-foundry-endpoint'
+          value: aiFoundryService.properties.endpoint
+        }
+        {
+          name: 'ai-foundry-key'
+          value: aiFoundryService.listKeys().key1
+        }
+        {
+          name: 'search-endpoint'
+          value: 'https://${searchService.name}.search.windows.net'
+        }
+        {
+          name: 'search-key'
+          value: searchService.listAdminKeys().primaryKey
+        }
+      ]
+    }
+    template: {
+      containers: [
+        {
+          name: 'ai-foundry-agent-service'
+          image: '${containerRegistry.properties.loginServer}/ai-foundry-agent-service:latest'
+          resources: {
+            cpu: json('0.5')
+            memory: '1Gi'
+          }
+          env: [
+            {
+              name: 'COSMOS_CONNECTION_STRING'
+              secretRef: 'cosmos-connection-string'
+            }
+            {
+              name: 'STORAGE_CONNECTION_STRING'
+              secretRef: 'storage-connection-string'
+            }
+            {
+              name: 'AI_FOUNDRY_ENDPOINT'
+              secretRef: 'ai-foundry-endpoint'
+            }
+            {
+              name: 'AI_FOUNDRY_KEY'
+              secretRef: 'ai-foundry-key'
+            }
+            {
+              name: 'SEARCH_ENDPOINT'
+              secretRef: 'search-endpoint'
+            }
+            {
+              name: 'SEARCH_KEY'
+              secretRef: 'search-key'
+            }
+            {
+              name: 'ENVIRONMENT'
+              value: environment
+            }
+          ]
+        }
+      ]
+      scale: {
+        minReplicas: 1
+        maxReplicas: 10
+        rules: [
+          {
+            name: 'http-scaling'
+            http: {
+              metadata: {
+                concurrentRequests: '100'
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${tenantManagedIdentities[0].id}': {}
+    }
+  }
+  tags: {
+    tenantScope: 'shared'
+  }
+}
+
+// Container Registry Role Assignment for Container Apps Environment
+resource acrPullRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(containerRegistry.id, containerAppsEnvironment.id, 'AcrPull')
+  scope: containerRegistry
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d') // AcrPull
+    principalId: containerAppsEnvironment.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+```
+
+### 3.9 API Management Configuration
 
 ```bicep
 // API Management Service
@@ -407,6 +582,15 @@ resource logAnalyticsWorkspace 'Microsoft.OperationalInsights/workspaces@2022-10
     },
     "jwtValidationUrl": {
       "value": "https://login.microsoftonline.com/common/v2.0/.well-known/openid_configuration"
+    },
+    "containerImageTag": {
+      "value": "latest"
+    },
+    "containerCpuCore": {
+      "value": "0.5"
+    },
+    "containerMemory": {
+      "value": "1Gi"
     }
   }
 }
@@ -467,9 +651,10 @@ echo "Deployment completed successfully"
 - Key Vault: Enable soft delete and purge protection
 
 ### 8.2 Scaling
-- Cosmos DB: Auto-scaling of Request Units (RU)
-- AI Search: Dynamic adjustment of replica and partition counts
-- APIM: Capacity expansion through tier upgrades
+- **Container Apps**: Auto-scaling based on HTTP request count (minimum 1, maximum 10 instances)
+- **Cosmos DB**: Auto-scaling of Request Units (RU)
+- **AI Search**: Dynamic adjustment of replica and partition counts
+- **APIM**: Capacity expansion through tier upgrades
 
 ## 9. Related Specifications
 

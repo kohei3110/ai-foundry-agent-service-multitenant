@@ -6,17 +6,21 @@
 
 本仕様書は、Azure AI Foundry Agent Service (FAS) のPooled（共有）マルチテナント方式におけるインフラストラクチャの設計・実装仕様を定義します。Bicepを使用したInfrastructure as Code (IaC) による自動化されたデプロイメントを前提とします。
 
+本システムは、コンテナベースのアプリケーションアーキテクチャを採用し、Azure Container Appsを使用してマイクロサービスとしてデプロイされます。これにより、高いスケーラビリティ、可用性、および運用性を実現します。
+
 ## 2. アーキテクチャ原則
 
 ### 2.1 リソース共有戦略
 - **単一プロジェクト共有**: 1つのFASプロジェクトに複数テナントを収容
 - **論理的分離**: タグ、RBAC/ABAC、パーティションキーによる境界維持
 - **セキュリティ最優先**: ゼロトラスト原則に基づく多層防御
+- **コンテナ化**: Azure Container Appsを使用したマイクロサービスアーキテクチャ
 
 ### 2.2 Bicep設計原則
 - **モジュラー設計**: 機能別にBicepモジュールを分離
 - **パラメーター化**: テナント固有の設定を外部化
 - **条件付きデプロイ**: 環境・テナント要件に応じた柔軟なリソース構成
+- **コンテナ統合**: Container AppsとContainer Registryの統合デプロイ
 
 ## 3. リソース構成
 
@@ -250,7 +254,178 @@ resource tenantKeyVaults 'Microsoft.KeyVault/vaults@2023-07-01' = [for tenant in
 }]
 ```
 
-### 3.8 API Management構成
+### 3.8 Container Apps構成
+
+```bicep
+// Container Registry
+resource containerRegistry 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
+  name: 'acr${replace(projectName, '-', '')}${environment}'
+  location: location
+  sku: {
+    name: 'Basic'
+  }
+  properties: {
+    adminUserEnabled: false
+    publicNetworkAccess: 'Enabled'
+  }
+  identity: {
+    type: 'SystemAssigned'
+  }
+  tags: {
+    tenantScope: 'shared'
+  }
+}
+
+// Container Apps Environment
+resource containerAppsEnvironment 'Microsoft.App/managedEnvironments@2023-05-01' = {
+  name: 'cae-${projectName}-${environment}'
+  location: location
+  properties: {
+    appLogsConfiguration: {
+      destination: 'log-analytics'
+      logAnalyticsConfiguration: {
+        customerId: logAnalyticsWorkspace.properties.customerId
+        sharedKey: logAnalyticsWorkspace.listKeys().primarySharedKey
+      }
+    }
+  }
+  tags: {
+    tenantScope: 'shared'
+  }
+}
+
+// Container App for AI Foundry Agent Service
+resource agentServiceContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
+  name: 'ca-${projectName}-${environment}'
+  location: location
+  properties: {
+    managedEnvironmentId: containerAppsEnvironment.id
+    configuration: {
+      activeRevisionsMode: 'Single'
+      ingress: {
+        external: true
+        targetPort: 80
+        corsPolicy: {
+          allowedOrigins: ['*']
+          allowedMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
+          allowedHeaders: ['*']
+          allowCredentials: false
+        }
+      }
+      registries: [
+        {
+          server: containerRegistry.properties.loginServer
+          identity: containerAppsEnvironment.identity.principalId
+        }
+      ]
+      secrets: [
+        {
+          name: 'cosmos-connection-string'
+          value: cosmosAccount.listConnectionStrings().connectionStrings[0].connectionString
+        }
+        {
+          name: 'storage-connection-string'
+          value: 'DefaultEndpointsProtocol=https;AccountName=${storageAccount.name};AccountKey=${storageAccount.listKeys().keys[0].value};EndpointSuffix=core.windows.net'
+        }
+        {
+          name: 'ai-foundry-endpoint'
+          value: aiFoundryService.properties.endpoint
+        }
+        {
+          name: 'ai-foundry-key'
+          value: aiFoundryService.listKeys().key1
+        }
+        {
+          name: 'search-endpoint'
+          value: 'https://${searchService.name}.search.windows.net'
+        }
+        {
+          name: 'search-key'
+          value: searchService.listAdminKeys().primaryKey
+        }
+      ]
+    }
+    template: {
+      containers: [
+        {
+          name: 'ai-foundry-agent-service'
+          image: '${containerRegistry.properties.loginServer}/ai-foundry-agent-service:latest'
+          resources: {
+            cpu: json('0.5')
+            memory: '1Gi'
+          }
+          env: [
+            {
+              name: 'COSMOS_CONNECTION_STRING'
+              secretRef: 'cosmos-connection-string'
+            }
+            {
+              name: 'STORAGE_CONNECTION_STRING'
+              secretRef: 'storage-connection-string'
+            }
+            {
+              name: 'AI_FOUNDRY_ENDPOINT'
+              secretRef: 'ai-foundry-endpoint'
+            }
+            {
+              name: 'AI_FOUNDRY_KEY'
+              secretRef: 'ai-foundry-key'
+            }
+            {
+              name: 'SEARCH_ENDPOINT'
+              secretRef: 'search-endpoint'
+            }
+            {
+              name: 'SEARCH_KEY'
+              secretRef: 'search-key'
+            }
+            {
+              name: 'ENVIRONMENT'
+              value: environment
+            }
+          ]
+        }
+      ]
+      scale: {
+        minReplicas: 1
+        maxReplicas: 10
+        rules: [
+          {
+            name: 'http-scaling'
+            http: {
+              metadata: {
+                concurrentRequests: '100'
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${tenantManagedIdentities[0].id}': {}
+    }
+  }
+  tags: {
+    tenantScope: 'shared'
+  }
+}
+
+// Container Registry Role Assignment for Container Apps Environment
+resource acrPullRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(containerRegistry.id, containerAppsEnvironment.id, 'AcrPull')
+  scope: containerRegistry
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d') // AcrPull
+    principalId: containerAppsEnvironment.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+```
+
+### 3.9 API Management構成
 
 ```bicep
 // API Management Service
@@ -407,6 +582,15 @@ resource logAnalyticsWorkspace 'Microsoft.OperationalInsights/workspaces@2022-10
     },
     "jwtValidationUrl": {
       "value": "https://login.microsoftonline.com/common/v2.0/.well-known/openid_configuration"
+    },
+    "containerImageTag": {
+      "value": "latest"
+    },
+    "containerCpuCore": {
+      "value": "0.5"
+    },
+    "containerMemory": {
+      "value": "1Gi"
     }
   }
 }
@@ -467,9 +651,10 @@ echo "Deployment completed successfully"
 - Key Vault: ソフト削除・消去保護の有効化
 
 ### 8.2 スケーリング
-- Cosmos DB: Request Units (RU) の自動スケーリング
-- AI Search: レプリカ・パーティション数の動的調整
-- APIM: 階層アップグレードによる容量拡張
+- **Container Apps**: HTTPリクエスト数に基づく自動スケーリング（最小1、最大10インスタンス）
+- **Cosmos DB**: Request Units (RU) の自動スケーリング
+- **AI Search**: レプリカ・パーティション数の動的調整
+- **APIM**: 階層アップグレードによる容量拡張
 
 ## 9. 関連仕様書
 

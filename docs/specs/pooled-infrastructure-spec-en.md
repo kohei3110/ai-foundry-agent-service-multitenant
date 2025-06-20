@@ -56,35 +56,25 @@ resource tenantManagedIdentities 'Microsoft.ManagedIdentity/userAssignedIdentiti
 ### 3.3 Azure AI Foundry Configuration
 
 ```bicep
-// AI Foundry Hub
-resource aiHub 'Microsoft.MachineLearningServices/workspaces@2024-04-01' = {
-  name: 'aih-${projectName}-${environment}'
+// AI Foundry Service (Cognitive Services Account)
+resource aiFoundryService 'Microsoft.CognitiveServices/accounts@2023-05-01' = {
+  name: 'cog-${projectName}-${environment}'
   location: location
-  kind: 'Hub'
+  kind: 'AIServices'
+  sku: {
+    name: 'S0'
+  }
   identity: {
     type: 'SystemAssigned'
   }
   properties: {
-    friendlyName: 'AI Foundry Hub - Pooled'
-    description: 'Shared hub for multi-tenant agent services'
-  }
-  tags: {
-    tenantScope: 'shared'
-  }
-}
-
-// AI Foundry Project
-resource aiProject 'Microsoft.MachineLearningServices/workspaces@2024-04-01' = {
-  name: 'aip-${projectName}-${environment}'
-  location: location
-  kind: 'Project'
-  identity: {
-    type: 'SystemAssigned'
-  }
-  properties: {
-    friendlyName: 'AI Foundry Project - Pooled Agents'
-    description: 'Shared project for multi-tenant FAS deployment'
-    hubResourceId: aiHub.id
+    customSubDomainName: 'aifoundry-${projectName}-${environment}'
+    networkAcls: {
+      defaultAction: 'Allow'
+      virtualNetworkRules: []
+      ipRules: []
+    }
+    publicNetworkAccess: 'Enabled'
   }
   tags: {
     tenantScope: 'shared'

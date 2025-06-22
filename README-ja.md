@@ -97,6 +97,61 @@ cd app/
 uvicorn main:app --reload
 ```
 
+## 🚀 GitHub ActionsによるCI/CD
+
+このリポジトリには、PooledとSiloの両方のアーキテクチャ用のGitHub Actionsを使用した自動化されたCI/CDパイプラインが含まれています。
+
+### 📋 パイプライン機能
+
+- **自動Bicep検証**とデプロイメント
+- **環境固有**のパラメーターファイル
+- **マルチ環境サポート** (dev, staging, prod)
+- **手動デプロイトリガー**（カスタムパラメーター付き）
+- **セキュリティスキャン**とコンプライアンスチェック
+- **デプロイ失敗時の自動ロールバック**
+
+### 🔧 セットアップ手順
+
+1. **Azure認証の設定**:
+   ```bash
+   # GitHub Actions用のService Principalを作成
+   az ad sp create-for-rbac \
+     --name "sp-fas-github-actions" \
+     --role "Contributor" \
+     --scopes "/subscriptions/{subscription-id}" \
+     --json-auth
+   ```
+
+2. **リポジトリ変数の設定** (GitHub Settings > Secrets and variables > Actions):
+   - `AZURE_CLIENT_ID`: Service PrincipalのクライアントID
+   - `AZURE_TENANT_ID`: AzureテナントID  
+   - `AZURE_SUBSCRIPTION_ID`: AzureサブスクリプションID
+
+3. **GitHub Environmentsの作成**:
+   - `pooled-dev`, `pooled-staging`, `pooled-prod`
+   - `silo-{tenant}-dev`, `silo-{tenant}-staging`, `silo-{tenant}-prod`
+
+### 🏃‍♂️ デプロイメントの実行
+
+#### 自動トリガー
+- **mainへのプッシュ**: 本番環境にデプロイ
+- **developへのプッシュ**: ステージング環境にデプロイ  
+- **`/pooled/infra/`の変更**: Pooledインフラストラクチャデプロイをトリガー
+- **`/silo/infra/`の変更**: Siloインフラストラクチャデプロイをトリガー
+
+#### 手動デプロイメント
+1. GitHubの**Actions**タブに移動
+2. **"Deploy Pooled Infrastructure"**または**"Deploy Silo Infrastructure"**を選択
+3. 環境を選択して**"Run workflow"**をクリック
+
+### 📊 デプロイメントの監視
+
+- **GitHub Actions Summary**: デプロイステータスとログの確認
+- **Azure Portal**: デプロイされたリソースとヘルスの監視
+- **Application Insights**: アプリケーションのパフォーマンスとエラーの追跡
+
+詳細なセットアップ手順については、[`.github/SETUP.md`](.github/SETUP.md)をご覧ください。
+
 ## 🏛️ アーキテクチャ概要
 
 ### Pooledマルチテナント アーキテクチャ

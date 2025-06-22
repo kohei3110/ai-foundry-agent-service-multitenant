@@ -154,6 +154,33 @@ jobs:
             echo "changed_files=" >> $GITHUB_OUTPUT
             echo "ℹ️ No infrastructure changes detected - deployment will be skipped"
           fi
+  skip-deployment:
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.should_deploy == 'false' && needs.detect-changes.outputs.has_infra_changes == 'false'
+    steps:
+      - name: Skip deployment notification
+        run: |
+          echo "⏭️ Infrastructure deployment skipped - no relevant changes detected"
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Deployment Skipped ⏭️" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "No infrastructure changes were detected in this commit." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Monitored paths:" >> $GITHUB_STEP_SUMMARY
+          echo "- \`pooled/infra/**\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`infra/main.bicep\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`infra/main.parameters.*.json\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "To force deployment, use the manual workflow trigger with 'Force deployment' option." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Workflow Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Validation**: Skipped" >> $GITHUB_STEP_SUMMARY
+          echo "- **Deployment**: Skipped" >> $GITHUB_STEP_SUMMARY
+          echo "- **Architecture**: Pooled Multi-Tenant" >> $GITHUB_STEP_SUMMARY
+          echo "- **Triggered by**: ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+
   validate-bicep:
     runs-on: ubuntu-latest
     needs: detect-changes
@@ -178,9 +205,9 @@ jobs:
             az bicep build --file "$bicep_file" --stdout > /dev/null
             if [ $? -eq 0 ]; then
               echo "✅ $bicep_file is valid"
-            else
-              echo "❌ $bicep_file validation failed"
-              exit 1            fi
+            else              echo "❌ $bicep_file validation failed"
+              exit 1
+            fi
           done
 
       - name: What-if deployment (dry-run)
@@ -312,30 +339,11 @@ jobs:
           # List deployed resources
           echo "Deployed resources:"
           az resource list --resource-group "$RESOURCE_GROUP" --output table
-  skip-deployment:
-    runs-on: ubuntu-latest
-    needs: detect-changes
-    if: needs.detect-changes.outputs.should_deploy == 'false' && needs.detect-changes.outputs.has_infra_changes == 'false'
-    steps:
-      - name: Skip deployment notification
-        run: |
-          echo "⏭️ Infrastructure deployment skipped - no relevant changes detected"
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## Deployment Skipped ⏭️" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "No infrastructure changes were detected in this commit." >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Monitored paths:" >> $GITHUB_STEP_SUMMARY
-          echo "- \`pooled/infra/**\`" >> $GITHUB_STEP_SUMMARY
-          echo "- \`infra/main.bicep\`" >> $GITHUB_STEP_SUMMARY
-          echo "- \`infra/main.parameters.*.json\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "To force deployment, use the manual workflow trigger with 'Force deployment' option." >> $GITHUB_STEP_SUMMARY
 
   post-deployment:
     runs-on: ubuntu-latest
-    needs: [detect-changes, deploy-infrastructure]
-    if: always() && (needs.deploy-infrastructure.result != 'skipped' || needs.detect-changes.outputs.should_deploy == 'false')
+    needs: [detect-changes, deploy-infrastructure, skip-deployment]
+    if: always() && (needs.deploy-infrastructure.result != 'skipped' || needs.skip-deployment.result == 'success')
     steps:
       - name: Post-deployment summary
         run: |

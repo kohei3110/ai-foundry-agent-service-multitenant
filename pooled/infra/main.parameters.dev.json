@@ -1,0 +1,47 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "projectName": {
+      "value": "fas-pooled"
+    },
+    "environment": {
+      "value": "dev"
+    },
+    "location": {
+      "value": "Japan East"
+    },
+    "tenantConfigs": {
+      "value": [
+        {
+          "id": "contoso",
+          "name": "contoso",
+          "displayName": "Contoso Corporation"
+        },
+        {
+          "id": "fabrikam", 
+          "name": "fabrikam",
+          "displayName": "Fabrikam Inc."
+        }
+      ]
+    },
+    "publisherEmail": {
+      "value": "admin@example.com"
+    },
+    "publisherName": {
+      "value": "AI Foundry Admin"
+    },
+    "jwtValidationUrl": {
+      "value": "https://login.microsoftonline.com/common/v2.0/.well-known/openid_configuration"
+    },
+    "containerImageTag": {
+      "value": "latest"
+    },
+    "containerCpuCore": {
+      "value": "0.25"
+    },
+    "containerMemory": {
+      "value": "0.5Gi"
+    }
+  }
+}

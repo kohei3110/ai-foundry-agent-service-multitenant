@@ -341,3 +341,60 @@ For enterprise support and custom implementation services, please contact your M
 **Built with ❤️ for the Azure AI community**
 
 *This repository demonstrates best practices for implementing multi-tenant AI agent services on Azure, combining the power of Azure AI Foundry with enterprise-grade security and scalability.*
+
+## 🚀 CI/CD with GitHub Actions
+
+This repository includes automated CI/CD pipelines for both Pooled and Silo architectures using GitHub Actions.
+
+### 📋 Pipeline Features
+
+- **Automated Bicep validation** and deployment
+- **Environment-specific** parameter files
+- **Multi-environment support** (dev, staging, prod)
+- **Manual deployment triggers** with custom parameters
+- **Security scanning** and compliance checks
+- **Automated rollback** on deployment failures
+
+### 🔧 Setup Instructions
+
+1. **Configure Azure Authentication**:
+   ```bash
+   # Create Service Principal for GitHub Actions
+   az ad sp create-for-rbac \
+     --name "sp-fas-github-actions" \
+     --role "Contributor" \
+     --scopes "/subscriptions/{subscription-id}" \
+     --json-auth
+   ```
+
+2. **Set Repository Variables** in GitHub Settings > Secrets and variables > Actions:
+   - `AZURE_CLIENT_ID`: Service Principal client ID
+   - `AZURE_TENANT_ID`: Azure tenant ID  
+   - `AZURE_SUBSCRIPTION_ID`: Azure subscription ID
+
+3. **Create GitHub Environments**:
+   - `pooled-dev`, `pooled-staging`, `pooled-prod`
+   - `silo-{tenant}-dev`, `silo-{tenant}-staging`, `silo-{tenant}-prod`
+
+### 🏃‍♂️ Running Deployments
+
+#### Automatic Triggers
+- **Push to main**: Deploys to production
+- **Push to develop**: Deploys to staging  
+- **Changes in `/pooled/infra/`**: Triggers pooled infrastructure deployment
+- **Changes in `/silo/infra/`**: Triggers silo infrastructure deployment
+
+#### Manual Deployment
+1. Go to **Actions** tab in GitHub
+2. Select **"Deploy Pooled Infrastructure"** or **"Deploy Silo Infrastructure"**
+3. Choose environment and click **"Run workflow"**
+
+### 📊 Monitoring Deployments
+
+- **GitHub Actions Summary**: View deployment status and logs
+- **Azure Portal**: Monitor deployed resources and health
+- **Application Insights**: Track application performance and errors
+
+For detailed setup instructions, see [`.github/SETUP.md`](.github/SETUP.md).
+
+## 🏛️ Architecture Overview

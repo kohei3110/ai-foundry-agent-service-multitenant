@@ -29,6 +29,11 @@ param tags object = {
 var resourceSuffix = '${projectName}-${environment}-${resourceToken}'
 var storageAccountName = take('st${replace(resourceToken, '-', '')}${environment}${uniqueString(resourceGroup().id)}', 24)
 var keyVaultName = 'kv-${resourceToken}'
+// Short name for Container Apps (max 32 chars) - use abbreviated naming to avoid length issues
+// Format: ca-agent-{first8charsOfToken}-{env} = ca-agent-12345678-dev (25 chars max)
+var containerAppName = 'ca-agent-${take(replace(resourceToken, '-', ''), 8)}-${environment}'
+// Short name for Cosmos DB (max 50 chars) - use abbreviated naming
+var cosmosDbName = 'cosmos-${take(replace(resourceToken, '-', ''), 8)}-${environment}'
 
 // ============================
 // 1. Log Analytics Workspace (required for Application Insights and Container Apps)
@@ -192,7 +197,7 @@ resource storageBlobDataContributorRoleAssignment 'Microsoft.Authorization/roleA
 // 6. Cosmos DB Account (Serverless)
 // ============================
 resource cosmosDbAccount 'Microsoft.DocumentDB/databaseAccounts@2024-11-15' = {
-  name: 'cosmos-${resourceSuffix}'
+  name: cosmosDbName
   location: location
   tags: union(tags, { 'azd-service-name': 'cosmos-db' })
   kind: 'GlobalDocumentDB'
@@ -305,7 +310,7 @@ resource containerAppsEnvironment 'Microsoft.App/managedEnvironments@2024-03-01'
 // 9. AI Foundry Agent Service Container App
 // ============================
 resource agentServiceContainerApp 'Microsoft.App/containerApps@2024-03-01' = {
-  name: 'ca-agent-${resourceSuffix}'
+  name: containerAppName
   location: location
   tags: union(tags, { 'azd-service-name': 'ai-foundry-agent-service' })
   identity: {

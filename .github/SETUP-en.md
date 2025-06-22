@@ -38,7 +38,7 @@ az ad sp create-for-rbac \
 # Resource Group Contributor permissions
 az role assignment create \
   --assignee {clientId} \
-  --role "Resource Group Contributor" \
+  --role "Contributor" \
   --scope "/subscriptions/{subscription-id}"
 
 # User Access Administrator (for RBAC role assignments)

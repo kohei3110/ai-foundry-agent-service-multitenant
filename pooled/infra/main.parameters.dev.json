@@ -9,7 +9,7 @@
       "value": "dev"
     },
     "location": {
-      "value": "${AZURE_LOCATION=eastus2}"
+      "value": "eastus2"
     },
     "tags": {
       "value": {

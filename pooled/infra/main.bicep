@@ -316,8 +316,7 @@ resource agentServiceContainerApp 'Microsoft.App/containerApps@2024-03-01' = {
   }
   properties: {
     environmentId: containerAppsEnvironment.id
-    configuration: {
-      ingress: {
+    configuration: {      ingress: {
         external: true
         targetPort: 8080
         corsPolicy: {
@@ -327,7 +326,8 @@ resource agentServiceContainerApp 'Microsoft.App/containerApps@2024-03-01' = {
           allowCredentials: false
         }
       }
-      secrets: [        {
+      secrets: [
+        {
           name: 'cosmos-connection-string'
           keyVaultUrl: '${keyVault.properties.vaultUri}secrets/cosmos-connection-string'
           identity: userAssignedIdentity.id
@@ -342,6 +342,11 @@ resource agentServiceContainerApp 'Microsoft.App/containerApps@2024-03-01' = {
           keyVaultUrl: '${keyVault.properties.vaultUri}secrets/storage-connection-string'
           identity: userAssignedIdentity.id
         }
+        {
+          name: 'ai-foundry-api-key'
+          keyVaultUrl: '${keyVault.properties.vaultUri}secrets/ai-foundry-api-key'
+          identity: userAssignedIdentity.id
+        }
       ]
       registries: [
         {
@@ -351,8 +356,7 @@ resource agentServiceContainerApp 'Microsoft.App/containerApps@2024-03-01' = {
       ]
     }
     template: {
-      containers: [
-        {
+      containers: [        {
           name: 'ai-foundry-agent'
           image: 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest' // プレースホルダー画像
           resources: {
@@ -396,6 +400,14 @@ resource agentServiceContainerApp 'Microsoft.App/containerApps@2024-03-01' = {
               name: 'KEY_VAULT_URI'
               value: keyVault.properties.vaultUri
             }
+            {
+              name: 'AI_FOUNDRY_ENDPOINT'
+              value: aiFoundryAccount.properties.endpoint
+            }
+            {
+              name: 'AI_FOUNDRY_API_KEY'
+              secretRef: 'ai-foundry-api-key'
+            }
           ]
         }
       ]
@@ -414,6 +426,43 @@ resource agentServiceContainerApp 'Microsoft.App/containerApps@2024-03-01' = {
         ]
       }
     }
+  }
+}
+
+// ============================
+// 10. AI Foundry (AI Services) Account
+// ============================
+resource aiFoundryAccount 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
+  name: 'ai-${resourceSuffix}'
+  location: location
+  tags: union(tags, { 'azd-service-name': 'ai-foundry' })
+  kind: 'AIServices'
+  identity: {
+    type: 'SystemAssigned'
+  }
+  sku: {
+    name: 'S0'
+  }
+  properties: {
+    customSubDomainName: 'ai-${resourceToken}'
+    publicNetworkAccess: 'Enabled'
+    networkAcls: {
+      defaultAction: 'Allow'
+      bypass: 'AzureServices'
+    }
+    disableLocalAuth: false
+    apiProperties: {}
+  }
+}
+
+// Grant Cognitive Services User role to the managed identity
+resource cognitiveServicesUserRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(aiFoundryAccount.id, userAssignedIdentity.id, 'Cognitive Services User')
+  scope: aiFoundryAccount
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'a97b65f3-24c7-4388-baec-2e87135dc908') // Cognitive Services User
+    principalId: userAssignedIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
   }
 }
 
@@ -479,3 +528,12 @@ output containerRegistryName string = containerRegistry.name
 
 @description('Container Registry login server')
 output containerRegistryLoginServer string = containerRegistry.properties.loginServer
+
+@description('AI Foundry account endpoint')
+output aiFoundryEndpoint string = aiFoundryAccount.properties.endpoint
+
+@description('AI Foundry account name')
+output aiFoundryAccountName string = aiFoundryAccount.name
+
+@description('AI Foundry account subdomain')
+output aiFoundrySubdomain string = aiFoundryAccount.properties.customSubDomainName

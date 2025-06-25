@@ -26,7 +26,7 @@ class TestHealthRouter:
             assert response.status_code == 200
             data = response.json()
             assert data["status"] == "healthy"
-            assert data["service"] == "test-service"
+            assert data["service"] == "test-service"  # Mock service returns this name
             assert data["version"] == "test-version"
             assert "timestamp" in data
     

@@ -3,7 +3,7 @@ Health check service module.
 Handles all health-related business logic.
 """
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any
 from abc import ABC, abstractmethod
 
@@ -75,4 +75,4 @@ class HealthService(HealthCheckInterface):
     
     def _get_current_timestamp(self) -> str:
         """Get current UTC timestamp in ISO format"""
-        return datetime.utcnow().isoformat() + "Z"
+        return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')

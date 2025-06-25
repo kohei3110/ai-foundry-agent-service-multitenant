@@ -14,6 +14,7 @@ Multi-tenant AI Agent Service - Pooled Architecture
 - 🐳 **Docker対応**: コンテナ化による一貫した実行環境
 - 📊 **ヘルスチェック**: Kubernetes対応のヘルスチェックエンドポイント
 - 📝 **自動ドキュメント**: OpenAPI/Swagger UI による API ドキュメント
+- ☁️ **Azure Blob Storage**: Azure Blob Storageからのオブジェクト読み取り機能
 
 ## アーキテクチャ
 
@@ -24,9 +25,11 @@ src/
 │   └── config.py  # 設定管理
 ├── routers/        # HTTPルーティング
 │   ├── health.py  # ヘルスチェックエンドポイント
+│   ├── blob_storage.py # Blob Storageエンドポイント
 │   └── root.py    # ルートエンドポイント
 ├── services/       # ビジネスロジック
-│   └── health_service.py
+│   ├── health_service.py
+│   └── blob_storage_service.py
 └── middleware/     # ミドルウェア
     ├── cors.py    # CORS設定
     └── logging.py # ログミドルウェア
@@ -58,6 +61,16 @@ cd pooled/app
 
 # 依存関係をインストール
 make install
+```
+
+### 3. 環境変数の設定
+
+```bash
+# 環境変数ファイルをコピー
+cp .env.example .env
+
+# 必要に応じて.envファイルを編集
+# Azure Blob Storageの設定を追加
 ```
 
 ## 開発環境での実行
@@ -325,3 +338,62 @@ docker logs --tail 50 pooled-app
 ## ライセンス
 
 このプロジェクトはMITライセンスの下で公開されています。
+
+## Azure Blob Storage
+
+アプリケーションはAzure Blob Storageからオブジェクトを読み取る機能を提供します。
+
+### エンドポイント
+
+| エンドポイント | メソッド | 説明 |
+|---|---|---|
+| `/blobs/{blob_name}` | GET | Blobコンテンツを取得 |
+| `/blobs/{blob_name}/stream` | GET | Blobコンテンツをストリーミング取得 |
+| `/blobs/{blob_name}/metadata` | GET | Blobメタデータを取得 |
+| `/blobs/{blob_name}` | HEAD | Blobの存在確認 |
+
+### パラメータ
+
+- **blob_name**: 取得するBlobの名前
+- **container**: コンテナ名（オプション、デフォルトは設定値）
+- **download**: ダウンロードとして強制する（`/blobs/{blob_name}`のみ）
+
+### 使用例
+
+```bash
+# Blobコンテンツを取得
+curl http://localhost:8000/blobs/document.pdf
+
+# 特定のコンテナからBlobを取得
+curl http://localhost:8000/blobs/document.pdf?container=my-container
+
+# ダウンロードとして強制
+curl http://localhost:8000/blobs/document.pdf?download=true
+
+# Blobメタデータを取得
+curl http://localhost:8000/blobs/document.pdf/metadata
+
+# Blobの存在確認
+curl -I http://localhost:8000/blobs/document.pdf
+```
+
+### 認証設定
+
+Azure Blob Storageへの接続には以下の方法があります：
+
+#### 1. 接続文字列（開発環境推奨）
+```bash
+AZURE_STORAGE_CONNECTION_STRING=DefaultEndpointsProtocol=https;AccountName=youraccount;AccountKey=yourkey;EndpointSuffix=core.windows.net
+```
+
+#### 2. アカウント名とキー
+```bash
+AZURE_STORAGE_ACCOUNT_NAME=youraccount
+AZURE_STORAGE_ACCOUNT_KEY=yourkey
+```
+
+#### 3. マネージドID（本番環境推奨）
+```bash
+AZURE_STORAGE_ACCOUNT_NAME=youraccount
+# DefaultAzureCredentialを使用
+```

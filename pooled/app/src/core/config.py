@@ -4,11 +4,17 @@ Handles environment variables and app settings.
 """
 import os
 from typing import List
+from pydantic import ConfigDict
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
     """Application settings"""
+    
+    model_config = ConfigDict(
+        env_file=".env",
+        case_sensitive=False
+    )
     
     # App info
     app_name: str = "Pooled Agent Service"
@@ -26,9 +32,11 @@ class Settings(BaseSettings):
     # Logging
     log_level: str = "INFO"
     
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
+    # Azure Blob Storage settings
+    azure_storage_account_name: str = ""
+    azure_storage_account_key: str = ""
+    azure_storage_connection_string: str = ""
+    azure_storage_container_name: str = "documents"
 
 
 # Global settings instance

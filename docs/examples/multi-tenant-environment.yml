@@ -1,0 +1,92 @@
+name: Multi-Tenant Environment Strategy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+      architecture:
+        description: 'Architecture type'
+        required: true
+        default: 'pooled'
+        type: choice
+        options:
+          - pooled
+          - silo
+      tenant_id:
+        description: 'Tenant ID (for silo only)'
+        required: false
+        type: string
+
+jobs:
+  determine-environment:
+    runs-on: ubuntu-latest
+    outputs:
+      environment_name: ${{ steps.env.outputs.environment_name }}
+    steps:
+      - id: env
+        run: |
+          if [ "${{ github.event.inputs.architecture }}" == "silo" ]; then
+            if [ -z "${{ github.event.inputs.tenant_id }}" ]; then
+              echo "Tenant ID is required for silo architecture"
+              exit 1
+            fi
+            ENV_NAME="silo-${{ github.event.inputs.tenant_id }}-${{ github.event.inputs.environment }}"
+          else
+            ENV_NAME="pooled-${{ github.event.inputs.environment }}"
+          fi
+          echo "environment_name=$ENV_NAME" >> $GITHUB_OUTPUT
+          echo "Selected environment: $ENV_NAME"
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: determine-environment
+    environment: 
+      name: ${{ needs.determine-environment.outputs.environment_name }}
+      url: https://portal.azure.com
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy Infrastructure
+        run: |
+          ENVIRONMENT="${{ github.event.inputs.environment }}"
+          ARCHITECTURE="${{ github.event.inputs.architecture }}"
+          TENANT_ID="${{ github.event.inputs.tenant_id }}"
+          
+          if [ "$ARCHITECTURE" == "silo" ]; then
+            RESOURCE_GROUP="rg-fas-silo-${TENANT_ID}-${ENVIRONMENT}"
+            TEMPLATE_PATH="silo/infra"
+          else
+            RESOURCE_GROUP="rg-fas-pooled-${ENVIRONMENT}"
+            TEMPLATE_PATH="pooled/infra"
+          fi
+          
+          echo "Deploying to: $RESOURCE_GROUP"
+          echo "Using variables from environment: ${{ needs.determine-environment.outputs.environment_name }}"
+          echo "Location: ${{ vars.LOCATION }}"
+          
+          # リソースグループ作成
+          az group create \
+            --name "$RESOURCE_GROUP" \
+            --location "${{ vars.LOCATION }}"
+          
+          # インフラストラクチャデプロイ
+          az deployment group create \
+            --resource-group "$RESOURCE_GROUP" \
+            --template-file "$TEMPLATE_PATH/main.bicep" \
+            --parameters environment="$ENVIRONMENT"

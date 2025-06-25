@@ -231,7 +231,6 @@ jobs:
   deploy-application:
     runs-on: ubuntu-latest
     needs: [detect-environment, build-and-push-image]
-    if: needs.detect-environment.outputs.should_deploy == 'true'
     environment: 
       name: pooled-${{ needs.detect-environment.outputs.environment }}
       url: https://portal.azure.com/#@${{ env.AZURE_TENANT_ID }}/resource/subscriptions/${{ env.AZURE_SUBSCRIPTION_ID }}/resourceGroups/rg-fas-pooled-${{ needs.detect-environment.outputs.environment }}

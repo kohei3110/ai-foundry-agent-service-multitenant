@@ -28,7 +28,6 @@ env:
   AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
   AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
   AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-  REGISTRY_NAME: crfaspooleddeveastus2001
   IMAGE_NAME: fas-pooled-app
 
 permissions:
@@ -43,6 +42,7 @@ jobs:
       environment: ${{ steps.set-env.outputs.environment }}
       should_deploy: ${{ steps.check-changes.outputs.should_deploy }}
       image_tag: ${{ steps.set-tag.outputs.image_tag }}
+      registry_name: ${{ steps.set-registry.outputs.registry_name }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -61,6 +61,15 @@ jobs:
           else
             echo "environment=dev" >> $GITHUB_OUTPUT
           fi
+
+      - name: Set registry name
+        id: set-registry
+        run: |
+          ENV="${{ steps.set-env.outputs.environment }}"
+          # Azure Container Registry名は小文字のアルファベットと数字のみ、5-50文字
+          REGISTRY_NAME="crfaspooled${ENV}"
+          echo "registry_name=$REGISTRY_NAME" >> $GITHUB_OUTPUT
+          echo "Registry name: $REGISTRY_NAME"
 
       - name: Set image tag
         id: set-tag
@@ -103,7 +112,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
@@ -168,20 +177,22 @@ jobs:
       - name: Get ACR login server
         id: acr-login
         run: |
-          ENVIRONMENT="${{ needs.detect-environment.outputs.environment }}"
-          REGISTRY_NAME="${{ env.REGISTRY_NAME }}${ENVIRONMENT}"
+          REGISTRY_NAME="${{ needs.detect-environment.outputs.registry_name }}"
           
-          # Get ACR login server
-          LOGIN_SERVER=$(az acr show --name "$REGISTRY_NAME" --query loginServer --output tsv 2>/dev/null || echo "")
+          echo "Looking for registry: $REGISTRY_NAME"
           
-          if [ -z "$LOGIN_SERVER" ]; then
+          # Get ACR login server with better error handling
+          if LOGIN_SERVER=$(az acr show --name "$REGISTRY_NAME" --query loginServer --output tsv 2>/dev/null); then
+            echo "login_server=$LOGIN_SERVER" >> $GITHUB_OUTPUT
+            echo "registry_name=$REGISTRY_NAME" >> $GITHUB_OUTPUT
+            echo "✅ Found ACR: $LOGIN_SERVER"
+          else
             echo "❌ Azure Container Registry '$REGISTRY_NAME' not found"
+            echo "Available registries in subscription:"
+            az acr list --query "[].{Name:name,LoginServer:loginServer}" --output table || true
             echo "Make sure the infrastructure is deployed first"
             exit 1
           fi
-          
-          echo "login_server=$LOGIN_SERVER" >> $GITHUB_OUTPUT
-          echo "registry_name=$REGISTRY_NAME" >> $GITHUB_OUTPUT
 
       - name: Log in to Azure Container Registry
         run: |
@@ -193,21 +204,39 @@ jobs:
           IMAGE_TAG="${{ needs.detect-environment.outputs.image_tag }}"
           LOGIN_SERVER="${{ steps.acr-login.outputs.login_server }}"
           IMAGE_URI="${LOGIN_SERVER}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}"
+          CACHE_IMAGE="${LOGIN_SERVER}/${{ env.IMAGE_NAME }}:cache"
           
           echo "Building image: $IMAGE_URI"
+          echo "Cache image: $CACHE_IMAGE"
           
-          # Build and push the image
+          # Check if cache image exists before using it
+          CACHE_FROM_ARG=""
+          if az acr repository show --name ${{ steps.acr-login.outputs.registry_name }} --image "${{ env.IMAGE_NAME }}:cache" --output none 2>/dev/null; then
+            echo "✅ Cache image found, using for build optimization"
+            CACHE_FROM_ARG="--cache-from $CACHE_IMAGE"
+          else
+            echo "ℹ️ No cache image found, building from scratch"
+          fi
+          
+          # Build and push the image with improved caching strategy
           docker buildx build \
             --platform linux/amd64 \
             --tag "$IMAGE_URI" \
             --push \
             --build-arg BUILDKIT_INLINE_CACHE=1 \
-            --cache-from "$LOGIN_SERVER/${{ env.IMAGE_NAME }}:cache" \
-            --cache-to "$LOGIN_SERVER/${{ env.IMAGE_NAME }}:cache,mode=max" \
+            $CACHE_FROM_ARG \
+            --cache-to "$CACHE_IMAGE,mode=max" \
+            --metadata-file /tmp/metadata.json \
             .
           
           echo "image_uri=$IMAGE_URI" >> $GITHUB_OUTPUT
           echo "✅ Image built and pushed successfully: $IMAGE_URI"
+          
+          # Output build metadata for debugging
+          if [ -f /tmp/metadata.json ]; then
+            echo "Build metadata:"
+            cat /tmp/metadata.json
+          fi
 
       - name: Scan image for vulnerabilities
         continue-on-error: true
@@ -234,7 +263,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Azure Login
-        uses: azure/login@v1
+        uses: azure/login@v2
         with:
           client-id: ${{ env.AZURE_CLIENT_ID }}
           tenant-id: ${{ env.AZURE_TENANT_ID }}
@@ -247,28 +276,40 @@ jobs:
           CONTAINER_APP_NAME="ca-fas-pooled-${ENVIRONMENT}"
           IMAGE_URI="${{ needs.build-and-push-image.outputs.image_uri }}"
           
-          echo "Deploying to environment: $ENVIRONMENT"
-          echo "Resource Group: $RESOURCE_GROUP"
-          echo "Container App: $CONTAINER_APP_NAME"
-          echo "Image: $IMAGE_URI"
+          echo "🚀 Deploying to environment: $ENVIRONMENT"
+          echo "📦 Resource Group: $RESOURCE_GROUP"
+          echo "🏗️  Container App: $CONTAINER_APP_NAME"
+          echo "📸 Image: $IMAGE_URI"
           
-          # Check if Container App exists
-          if az containerapp show --name "$CONTAINER_APP_NAME" --resource-group "$RESOURCE_GROUP" --output none 2>/dev/null; then
-            echo "Updating existing Container App..."
-            
-            az containerapp update \
-              --name "$CONTAINER_APP_NAME" \
-              --resource-group "$RESOURCE_GROUP" \
-              --image "$IMAGE_URI" \
-              --set-env-vars \
-                ENVIRONMENT="$ENVIRONMENT" \
-                AZURE_CLIENT_ID="${{ env.AZURE_CLIENT_ID }}" \
-              --revision-suffix "$(date +%Y%m%d-%H%M%S)"
-          else
-            echo "❌ Container App '$CONTAINER_APP_NAME' not found"
-            echo "Make sure the infrastructure is deployed first"
+          # Validate resources exist before deployment
+          if ! az group show --name "$RESOURCE_GROUP" --output none 2>/dev/null; then
+            echo "❌ Resource Group '$RESOURCE_GROUP' not found"
             exit 1
           fi
+          
+          if ! az containerapp show --name "$CONTAINER_APP_NAME" --resource-group "$RESOURCE_GROUP" --output none 2>/dev/null; then
+            echo "❌ Container App '$CONTAINER_APP_NAME' not found in resource group '$RESOURCE_GROUP'"
+            echo "Available Container Apps:"
+            az containerapp list --resource-group "$RESOURCE_GROUP" --query "[].name" --output table || true
+            exit 1
+          fi
+          
+          echo "✅ Resources validated, starting deployment..."
+          
+          # Deploy with zero-downtime rolling update
+          az containerapp update \
+            --name "$CONTAINER_APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --image "$IMAGE_URI" \
+            --set-env-vars \
+              ENVIRONMENT="$ENVIRONMENT" \
+              AZURE_CLIENT_ID="${{ env.AZURE_CLIENT_ID }}" \
+              BUILD_NUMBER="${{ github.run_number }}" \
+              COMMIT_SHA="${{ github.sha }}" \
+            --revision-suffix "$(date +%Y%m%d-%H%M%S)" \
+            --output table
+          
+          echo "✅ Deployment command completed"
 
       - name: Verify deployment
         run: |
@@ -276,28 +317,46 @@ jobs:
           RESOURCE_GROUP="rg-fas-pooled-${ENVIRONMENT}"
           CONTAINER_APP_NAME="ca-fas-pooled-${ENVIRONMENT}"
           
-          echo "Verifying deployment..."
+          echo "🔍 Verifying deployment..."
           
-          # Get Container App status
-          STATUS=$(az containerapp show \
+          # Wait for deployment to settle
+          echo "⏳ Waiting for deployment to stabilize..."
+          sleep 45
+          
+          # Get Container App FQDN
+          FQDN=$(az containerapp show \
             --name "$CONTAINER_APP_NAME" \
             --resource-group "$RESOURCE_GROUP" \
-            --query "properties.latestRevisionFqdn" \
+            --query "properties.configuration.ingress.fqdn" \
             --output tsv)
           
-          if [ -n "$STATUS" ]; then
+          if [ -n "$FQDN" ] && [ "$FQDN" != "null" ]; then
             echo "✅ Container App is running"
-            echo "Application URL: https://$STATUS"
+            echo "🌐 Application URL: https://$FQDN"
             
-            # Test health endpoint
-            sleep 30  # Wait for deployment to stabilize
-            if curl -f "https://$STATUS/health" --connect-timeout 10 --max-time 30; then
-              echo "✅ Health check passed"
-            else
-              echo "⚠️ Health check failed (may take a few minutes to be ready)"
-            fi
+            # Enhanced health check with retry logic
+            echo "🏥 Performing health check..."
+            HEALTH_URL="https://$FQDN/health"
+            MAX_RETRIES=6
+            RETRY_COUNT=0
+            
+            while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+              if curl -f -s --connect-timeout 10 --max-time 30 "$HEALTH_URL" > /dev/null 2>&1; then
+                echo "✅ Health check passed on attempt $((RETRY_COUNT + 1))"
+                break
+              else
+                RETRY_COUNT=$((RETRY_COUNT + 1))
+                if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+                  echo "⏳ Health check failed, retrying in 15 seconds (attempt $RETRY_COUNT/$MAX_RETRIES)..."
+                  sleep 15
+                else
+                  echo "⚠️ Health check failed after $MAX_RETRIES attempts"
+                  echo "The application may still be starting up. Please check manually."
+                fi
+              fi
+            done
           else
-            echo "❌ Failed to get Container App status"
+            echo "❌ Failed to get Container App FQDN"
             exit 1
           fi
 

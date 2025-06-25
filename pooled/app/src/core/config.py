@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     azure_storage_account_key: str = ""
     azure_storage_connection_string: str = ""
     azure_storage_container_name: str = "documents"
+    
+    # Azure Authentication settings
+    azure_client_id: str = ""
 
 
 # Global settings instance

@@ -25,7 +25,8 @@ def get_blob_storage_service() -> BlobStorageInterface:
         account_name=settings.azure_storage_account_name,
         account_key=settings.azure_storage_account_key,
         connection_string=settings.azure_storage_connection_string,
-        default_container=settings.azure_storage_container_name
+        default_container=settings.azure_storage_container_name,
+        client_id=settings.azure_client_id
     )
 
 

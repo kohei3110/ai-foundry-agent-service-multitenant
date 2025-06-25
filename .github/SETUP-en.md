@@ -4,8 +4,32 @@ This document explains how to set up CI/CD pipelines using GitHub Actions for th
 
 ## 1. Prerequisites
 
-- Azure subscription
-- GitHub repository administrator permissions
+- Azure subscriptio## 7. Deployment Procedures
+
+### 7.1 In3. **Application Insights** - Verify application functionality
+4. **Container Apps** - Check application deployment and health status
+
+## 8. Troubleshootingstructure Deployment
+
+1. **Push Triggers**:
+   - Push changes to `pooled/infra/` → Triggers Pooled environment deployment
+   - Push changes to `silo/infra/` → Triggers Silo environment deployment
+
+2. **Manual Triggers**:
+   - Go to GitHub Actions tab and select "Deploy Pooled Infrastructure" or "Deploy Silo Infrastructure"
+   - Choose environment and tenant (for Silo) and run the workflow
+
+### 7.2 Application Deployment
+
+1. **Automated Triggers**:
+   - Push changes to `pooled/app/` → Triggers Pooled application deployment
+   - Push changes to `silo/app/` → Triggers Silo application deployment (when implemented)
+
+2. **Manual Triggers**:
+   - Go to GitHub Actions tab and select "Deploy Pooled Application"
+   - Choose environment and run the workflow
+
+### 7.3 Deployment Verificationpository administrator permissions
 - Azure CLI (for local setup)
 
 ## 2. Azure Configuration
@@ -195,9 +219,34 @@ silo/
 }
 ```
 
-## 6. Deployment Procedures
+## 6. Application Deployment Workflows
 
-### 6.1 Automated Deployment
+In addition to infrastructure deployment, this repository includes CI/CD workflows for application deployment.
+
+### 6.1 Pooled Application Deployment
+
+The `deploy-pooled-app.yml` workflow handles the deployment of the Python container application in the `pooled/app` directory.
+
+**Features:**
+- Automatic testing (unit and integration tests)
+- Docker image building with Azure Container Registry
+- Deployment to Azure Container Apps
+- Multi-environment support (dev/staging/prod)
+
+**Triggers:**
+- Push to any branch with changes in `pooled/app/`
+- Pull requests to main/develop branches
+- Manual workflow dispatch
+
+**Prerequisites:**
+- Infrastructure must be deployed first using `deploy-pooled-infra.yml`
+- Required Azure resources: Container Registry, Container Apps Environment, Container App
+
+For detailed setup instructions, see [POOLED-APP-SETUP.md](./POOLED-APP-SETUP.md).
+
+## 7. Deployment Procedures
+
+### 7.1 Automated Deployment
 
 1. **Push Triggers**:
    - Push changes to `pooled/infra/` → Triggers Pooled environment deployment
@@ -207,7 +256,7 @@ silo/
    - Go to GitHub Actions tab and select "Deploy Pooled Infrastructure" or "Deploy Silo Infrastructure"
    - Choose environment and tenant (for Silo) and run the workflow
 
-### 6.2 Deployment Verification
+### 7.2 Deployment Verification
 
 After deployment completion, verify the following:
 
@@ -215,9 +264,9 @@ After deployment completion, verify the following:
 2. **GitHub Actions** Summary - Check deployment results
 3. **Application Insights** - Verify application functionality
 
-## 7. Troubleshooting
+## 8. Troubleshooting
 
-### 7.1 Authentication Errors
+### 8.1 Authentication Errors
 
 ```
 Error: The client '...' with object id '...' does not have authorization to perform action '...'
@@ -227,7 +276,7 @@ Error: The client '...' with object id '...' does not have authorization to perf
 - Verify appropriate permissions are assigned to the Service Principal
 - Check permissions at subscription and resource group levels
 
-### 7.2 Parameter File Errors
+### 8.2 Parameter File Errors
 
 ```
 ❌ No parameters file found
@@ -237,7 +286,7 @@ Error: The client '...' with object id '...' does not have authorization to perf
 - Verify the environment-specific parameter file exists
 - Check file naming conventions
 
-### 7.3 Bicep Validation Errors
+### 8.3 Bicep Validation Errors
 
 ```
 ❌ main.bicep validation failed
@@ -247,7 +296,7 @@ Error: The client '...' with object id '...' does not have authorization to perf
 - Run `az bicep build --file main.bicep` locally to check for errors
 - Verify Bicep syntax and resource definitions
 
-## 8. Security Considerations
+## 9. Security Considerations
 
 1. **Secret Management**:
    - Service Principal clientSecret is managed via GitHub Secrets (using Federated Identity in this setup)
@@ -261,7 +310,7 @@ Error: The client '...' with object id '...' does not have authorization to perf
    - All deployments are logged in GitHub Actions
    - Track resource changes via Azure Activity Log
 
-## 9. Reference Links
+## 10. Reference Links
 
 - [GitHub Environments](https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment)
 - [Azure Service Principal](https://docs.microsoft.com/en-us/azure/active-directory/develop/app-objects-and-service-principals)

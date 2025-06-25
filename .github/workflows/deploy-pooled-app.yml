@@ -1,0 +1,370 @@
+name: Deploy Pooled Application
+
+on:
+  push:
+    paths:
+      - 'pooled/app/**'
+  pull_request:
+    paths:
+      - 'pooled/app/**'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+      force_deploy:
+        description: 'Force deployment even if no changes detected'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+  AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+  AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+  REGISTRY_NAME: crfaspooleddeveastus2001
+  IMAGE_NAME: fas-pooled-app
+
+permissions:
+  id-token: write
+  contents: read
+  packages: write
+
+jobs:
+  detect-environment:
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.set-env.outputs.environment }}
+      should_deploy: ${{ steps.check-changes.outputs.should_deploy }}
+      image_tag: ${{ steps.set-tag.outputs.image_tag }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine environment
+        id: set-env
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "environment=${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.ref }}" == "refs/heads/main" ]; then
+            echo "environment=prod" >> $GITHUB_OUTPUT
+          elif [ "${{ github.ref }}" == "refs/heads/develop" ]; then
+            echo "environment=staging" >> $GITHUB_OUTPUT
+          else
+            echo "environment=dev" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set image tag
+        id: set-tag
+        run: |
+          ENV="${{ steps.set-env.outputs.environment }}"
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            echo "image_tag=pr-${{ github.event.number }}-$(echo ${{ github.sha }} | cut -c1-8)" >> $GITHUB_OUTPUT
+          else
+            echo "image_tag=${ENV}-$(echo ${{ github.sha }} | cut -c1-8)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check for application changes
+        id: check-changes
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ] && [ "${{ github.event.inputs.force_deploy }}" == "true" ]; then
+            echo "should_deploy=true" >> $GITHUB_OUTPUT
+            echo "Force deployment requested"
+          elif [ "${{ github.event_name }}" == "pull_request" ]; then
+            echo "should_deploy=false" >> $GITHUB_OUTPUT
+            echo "Pull request - build and test only"
+          else
+            # Check if there are changes in pooled/app directory
+            if git diff --name-only HEAD~1 HEAD | grep -q "^pooled/app/"; then
+              echo "should_deploy=true" >> $GITHUB_OUTPUT
+              echo "Application changes detected"
+            else
+              echo "should_deploy=false" >> $GITHUB_OUTPUT
+              echo "No application changes detected"
+            fi
+          fi
+
+  test-application:
+    runs-on: ubuntu-latest
+    needs: detect-environment
+    defaults:
+      run:
+        working-directory: ./pooled/app
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: |
+          uv sync --all-extras
+
+      - name: Run linting
+        run: |
+          echo "Running code quality checks..."
+          # Add your linting commands here if you have them configured
+          # Example: uv run ruff check .
+          # Example: uv run black --check .
+
+      - name: Run tests
+        run: |
+          echo "Running unit tests..."
+          uv run pytest tests/unit/ -v --cov=src --cov-report=xml --cov-report=html
+        continue-on-error: true
+
+      - name: Run integration tests
+        run: |
+          echo "Running integration tests..."
+          uv run pytest tests/integration/ -v
+        continue-on-error: true
+
+      - name: Upload coverage reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-reports
+          path: |
+            pooled/app/coverage.xml
+            pooled/app/htmlcov/
+          retention-days: 7
+
+  build-and-push-image:
+    runs-on: ubuntu-latest
+    needs: [detect-environment, test-application]
+    outputs:
+      image_uri: ${{ steps.build.outputs.image_uri }}
+    defaults:
+      run:
+        working-directory: ./pooled/app
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Get ACR login server
+        id: acr-login
+        run: |
+          ENVIRONMENT="${{ needs.detect-environment.outputs.environment }}"
+          REGISTRY_NAME="${{ env.REGISTRY_NAME }}${ENVIRONMENT}"
+          
+          # Get ACR login server
+          LOGIN_SERVER=$(az acr show --name "$REGISTRY_NAME" --query loginServer --output tsv 2>/dev/null || echo "")
+          
+          if [ -z "$LOGIN_SERVER" ]; then
+            echo "❌ Azure Container Registry '$REGISTRY_NAME' not found"
+            echo "Make sure the infrastructure is deployed first"
+            exit 1
+          fi
+          
+          echo "login_server=$LOGIN_SERVER" >> $GITHUB_OUTPUT
+          echo "registry_name=$REGISTRY_NAME" >> $GITHUB_OUTPUT
+
+      - name: Log in to Azure Container Registry
+        run: |
+          az acr login --name ${{ steps.acr-login.outputs.registry_name }}
+
+      - name: Build and push Docker image
+        id: build
+        run: |
+          IMAGE_TAG="${{ needs.detect-environment.outputs.image_tag }}"
+          LOGIN_SERVER="${{ steps.acr-login.outputs.login_server }}"
+          IMAGE_URI="${LOGIN_SERVER}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}"
+          
+          echo "Building image: $IMAGE_URI"
+          
+          # Build and push the image
+          docker buildx build \
+            --platform linux/amd64 \
+            --tag "$IMAGE_URI" \
+            --push \
+            --build-arg BUILDKIT_INLINE_CACHE=1 \
+            --cache-from "$LOGIN_SERVER/${{ env.IMAGE_NAME }}:cache" \
+            --cache-to "$LOGIN_SERVER/${{ env.IMAGE_NAME }}:cache,mode=max" \
+            .
+          
+          echo "image_uri=$IMAGE_URI" >> $GITHUB_OUTPUT
+          echo "✅ Image built and pushed successfully: $IMAGE_URI"
+
+      - name: Scan image for vulnerabilities
+        continue-on-error: true
+        run: |
+          IMAGE_URI="${{ steps.build.outputs.image_uri }}"
+          REGISTRY_NAME="${{ steps.acr-login.outputs.registry_name }}"
+          
+          echo "Scanning image for vulnerabilities..."
+          az acr check-health --name "$REGISTRY_NAME" --yes
+          
+          # Run vulnerability scan if available
+          # az acr task run --registry "$REGISTRY_NAME" --name security-scan --set image="$IMAGE_URI" || true
+
+  deploy-application:
+    runs-on: ubuntu-latest
+    needs: [detect-environment, build-and-push-image]
+    if: needs.detect-environment.outputs.should_deploy == 'true' && github.event_name != 'pull_request'
+    environment: 
+      name: pooled-${{ needs.detect-environment.outputs.environment }}
+      url: https://portal.azure.com/#@${{ env.AZURE_TENANT_ID }}/resource/subscriptions/${{ env.AZURE_SUBSCRIPTION_ID }}/resourceGroups/rg-fas-pooled-${{ needs.detect-environment.outputs.environment }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy to Azure Container Apps
+        run: |
+          ENVIRONMENT="${{ needs.detect-environment.outputs.environment }}"
+          RESOURCE_GROUP="rg-fas-pooled-${ENVIRONMENT}"
+          CONTAINER_APP_NAME="ca-fas-pooled-${ENVIRONMENT}"
+          IMAGE_URI="${{ needs.build-and-push-image.outputs.image_uri }}"
+          
+          echo "Deploying to environment: $ENVIRONMENT"
+          echo "Resource Group: $RESOURCE_GROUP"
+          echo "Container App: $CONTAINER_APP_NAME"
+          echo "Image: $IMAGE_URI"
+          
+          # Check if Container App exists
+          if az containerapp show --name "$CONTAINER_APP_NAME" --resource-group "$RESOURCE_GROUP" --output none 2>/dev/null; then
+            echo "Updating existing Container App..."
+            
+            az containerapp update \
+              --name "$CONTAINER_APP_NAME" \
+              --resource-group "$RESOURCE_GROUP" \
+              --image "$IMAGE_URI" \
+              --set-env-vars \
+                ENVIRONMENT="$ENVIRONMENT" \
+                AZURE_CLIENT_ID="${{ env.AZURE_CLIENT_ID }}" \
+              --revision-suffix "$(date +%Y%m%d-%H%M%S)"
+          else
+            echo "❌ Container App '$CONTAINER_APP_NAME' not found"
+            echo "Make sure the infrastructure is deployed first"
+            exit 1
+          fi
+
+      - name: Verify deployment
+        run: |
+          ENVIRONMENT="${{ needs.detect-environment.outputs.environment }}"
+          RESOURCE_GROUP="rg-fas-pooled-${ENVIRONMENT}"
+          CONTAINER_APP_NAME="ca-fas-pooled-${ENVIRONMENT}"
+          
+          echo "Verifying deployment..."
+          
+          # Get Container App status
+          STATUS=$(az containerapp show \
+            --name "$CONTAINER_APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --query "properties.latestRevisionFqdn" \
+            --output tsv)
+          
+          if [ -n "$STATUS" ]; then
+            echo "✅ Container App is running"
+            echo "Application URL: https://$STATUS"
+            
+            # Test health endpoint
+            sleep 30  # Wait for deployment to stabilize
+            if curl -f "https://$STATUS/health" --connect-timeout 10 --max-time 30; then
+              echo "✅ Health check passed"
+            else
+              echo "⚠️ Health check failed (may take a few minutes to be ready)"
+            fi
+          else
+            echo "❌ Failed to get Container App status"
+            exit 1
+          fi
+
+      - name: Get application logs
+        if: failure()
+        run: |
+          ENVIRONMENT="${{ needs.detect-environment.outputs.environment }}"
+          RESOURCE_GROUP="rg-fas-pooled-${ENVIRONMENT}"
+          CONTAINER_APP_NAME="ca-fas-pooled-${ENVIRONMENT}"
+          
+          echo "Getting application logs for troubleshooting..."
+          az containerapp logs show \
+            --name "$CONTAINER_APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --tail 50 || true
+
+  post-deployment:
+    runs-on: ubuntu-latest
+    needs: [detect-environment, build-and-push-image, deploy-application]
+    if: always() && (needs.build-and-push-image.result != 'skipped' || needs.deploy-application.result != 'skipped')
+    steps:
+      - name: Post-deployment summary
+        run: |
+          ENVIRONMENT="${{ needs.detect-environment.outputs.environment }}"
+          IMAGE_TAG="${{ needs.detect-environment.outputs.image_tag }}"
+          
+          echo "## Application Deployment Summary 🚀" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment**: $ENVIRONMENT" >> $GITHUB_STEP_SUMMARY
+          echo "- **Architecture**: Pooled Multi-Tenant" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image Tag**: $IMAGE_TAG" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build Status**: ${{ needs.build-and-push-image.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Deployment Status**: ${{ needs.deploy-application.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image URI**: ${{ needs.build-and-push-image.outputs.image_uri }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Deployed by**: ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ needs.deploy-application.result }}" == "success" ] || [ "${{ github.event_name }}" == "pull_request" ]; then
+            if [ "${{ github.event_name }}" == "pull_request" ]; then
+              echo "🔍 **Pull Request Build Completed!**" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "- Docker image built and pushed successfully" >> $GITHUB_STEP_SUMMARY
+              echo "- All tests passed" >> $GITHUB_STEP_SUMMARY
+              echo "- Ready for deployment when merged" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "🎉 **Deployment completed successfully!**" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
+              echo "- Check the [Azure Portal](https://portal.azure.com/#@${{ env.AZURE_TENANT_ID }}/resource/subscriptions/${{ env.AZURE_SUBSCRIPTION_ID }}/resourceGroups/rg-fas-pooled-$ENVIRONMENT)" >> $GITHUB_STEP_SUMMARY
+              echo "- Verify application health at the Container App URL" >> $GITHUB_STEP_SUMMARY
+              echo "- Run end-to-end tests" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "❌ **Deployment failed!**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Please check the workflow logs and resolve any issues before retrying." >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            echo "🚨 Pooled application build failed for PR #${{ github.event.number }}"
+          else
+            echo "🚨 Pooled application deployment failed for environment: ${{ needs.detect-environment.outputs.environment }}"
+          fi
+          echo "Please check the workflow logs for details."

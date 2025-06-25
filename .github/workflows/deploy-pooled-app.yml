@@ -177,7 +177,7 @@ jobs:
       - name: Get ACR login server
         id: acr-login
         run: |
-          REGISTRY_NAME="crfaspooleddeveastus2001dev"
+          REGISTRY_NAME="${{ needs.detect-environment.outputs.registry_name }}"
           
           echo "Looking for registry: $REGISTRY_NAME"
           
@@ -204,28 +204,18 @@ jobs:
           IMAGE_TAG="${{ needs.detect-environment.outputs.image_tag }}"
           LOGIN_SERVER="${{ steps.acr-login.outputs.login_server }}"
           IMAGE_URI="${LOGIN_SERVER}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}"
-          CACHE_IMAGE="${LOGIN_SERVER}/${{ env.IMAGE_NAME }}:cache"
           
           echo "Building image: $IMAGE_URI"
-          echo "Cache image: $CACHE_IMAGE"
+          echo "Git SHA: ${{ github.sha }}"
+          echo "Short SHA: $(echo ${{ github.sha }} | cut -c1-8)"
           
-          # Check if cache image exists before using it
-          CACHE_FROM_ARG=""
-          if az acr repository show --name ${{ steps.acr-login.outputs.registry_name }} --image "${{ env.IMAGE_NAME }}:cache" --output none 2>/dev/null; then
-            echo "✅ Cache image found, using for build optimization"
-            CACHE_FROM_ARG="--cache-from $CACHE_IMAGE"
-          else
-            echo "ℹ️ No cache image found, building from scratch"
-          fi
-          
-          # Build and push the image with improved caching strategy
+          # Build and push the image without cache
           docker buildx build \
             --platform linux/amd64 \
             --tag "$IMAGE_URI" \
             --push \
-            --build-arg BUILDKIT_INLINE_CACHE=1 \
-            $CACHE_FROM_ARG \
-            --cache-to "$CACHE_IMAGE,mode=max" \
+            --build-arg GIT_SHA="${{ github.sha }}" \
+            --build-arg SHORT_SHA="$(echo ${{ github.sha }} | cut -c1-8)" \
             --metadata-file /tmp/metadata.json \
             .
           

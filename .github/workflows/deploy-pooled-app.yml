@@ -177,7 +177,7 @@ jobs:
       - name: Get ACR login server
         id: acr-login
         run: |
-          REGISTRY_NAME="${{ needs.detect-environment.outputs.registry_name }}"
+          REGISTRY_NAME="crfaspooleddeveastus2001dev"
           
           echo "Looking for registry: $REGISTRY_NAME"
           

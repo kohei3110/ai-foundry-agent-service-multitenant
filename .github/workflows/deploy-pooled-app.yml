@@ -228,18 +228,6 @@ jobs:
             cat /tmp/metadata.json
           fi
 
-      - name: Scan image for vulnerabilities
-        continue-on-error: true
-        run: |
-          IMAGE_URI="${{ steps.build.outputs.image_uri }}"
-          REGISTRY_NAME="${{ steps.acr-login.outputs.registry_name }}"
-          
-          echo "Scanning image for vulnerabilities..."
-          az acr check-health --name "$REGISTRY_NAME" --yes
-          
-          # Run vulnerability scan if available
-          # az acr task run --registry "$REGISTRY_NAME" --name security-scan --set image="$IMAGE_URI" || true
-
   deploy-application:
     runs-on: ubuntu-latest
     needs: [detect-environment, build-and-push-image]
@@ -255,9 +243,7 @@ jobs:
       - name: Azure Login
         uses: azure/login@v2
         with:
-          client-id: ${{ env.AZURE_CLIENT_ID }}
-          tenant-id: ${{ env.AZURE_TENANT_ID }}
-          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
 
       - name: Deploy to Azure Container Apps
         run: |

@@ -247,6 +247,7 @@ jobs:
       - name: Deploy to Azure Container Apps
         run: |
           ENVIRONMENT="${{ needs.detect-environment.outputs.environment }}"
+          AZURE_SUBSCRIPTION_ID="${{ env.AZURE_SUBSCRIPTION_ID }}"
           RESOURCE_GROUP="rg-fasmultitenant-demo-eastus2-001"
           CONTAINER_APP_NAME="ca-fas-pooled-${ENVIRONMENT}"
           IMAGE_URI="${{ needs.build-and-push-image.outputs.image_uri }}"
@@ -281,7 +282,7 @@ jobs:
               AZURE_CLIENT_ID="${{ env.AZURE_CLIENT_ID }}" \
               BUILD_NUMBER="${{ github.run_number }}" \
               COMMIT_SHA="${{ github.sha }}" \
-              CONTAINER_APPS_SUBSCRIPTION_ID="${{ env.AZURE_SUBSCRIPTION_ID }}" \
+              CONTAINER_APPS_SUBSCRIPTION_ID="$AZURE_SUBSCRIPTION_ID" \
               CONTAINER_APPS_RESOURCE_GROUP="$RESOURCE_GROUP" \
             --revision-suffix "$(date +%Y%m%d-%H%M%S)" \
             --output table

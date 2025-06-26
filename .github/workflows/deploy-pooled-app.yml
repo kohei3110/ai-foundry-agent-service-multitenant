@@ -247,7 +247,7 @@ jobs:
       - name: Deploy to Azure Container Apps
         run: |
           ENVIRONMENT="${{ needs.detect-environment.outputs.environment }}"
-          RESOURCE_GROUP="rg-fas-pooled-${ENVIRONMENT}"
+          RESOURCE_GROUP="rg-fasmultitenant-demo-eastus2-001"
           CONTAINER_APP_NAME="ca-fas-pooled-${ENVIRONMENT}"
           IMAGE_URI="${{ needs.build-and-push-image.outputs.image_uri }}"
           
@@ -289,7 +289,7 @@ jobs:
       - name: Verify deployment
         run: |
           ENVIRONMENT="${{ needs.detect-environment.outputs.environment }}"
-          RESOURCE_GROUP="rg-fas-pooled-${ENVIRONMENT}"
+          RESOURCE_GROUP="rg-fasmultitenant-demo-eastus2-001"
           CONTAINER_APP_NAME="ca-fas-pooled-${ENVIRONMENT}"
           
           echo "🔍 Verifying deployment..."
@@ -339,7 +339,7 @@ jobs:
         if: failure()
         run: |
           ENVIRONMENT="${{ needs.detect-environment.outputs.environment }}"
-          RESOURCE_GROUP="rg-fas-pooled-${ENVIRONMENT}"
+          RESOURCE_GROUP="rg-fasmultitenant-demo-eastus2-001"
           CONTAINER_APP_NAME="ca-fas-pooled-${ENVIRONMENT}"
           
           echo "Getting application logs for troubleshooting..."

@@ -88,7 +88,7 @@ class AzureDynamicSessionsService(DynamicSessionsInterface):
     async def _get_access_token(self) -> str:
         """Get an access token for Azure management API"""
         try:
-            token = self.credential.get_token("https://management.azure.com/.default")
+            token = self.credential.get_token("https://dynamicsessions.io/.default")
             return token.token
         except AzureError as e:
             logger.error(f"Failed to get access token: {e}")
@@ -181,21 +181,22 @@ class AzureDynamicSessionsService(DynamicSessionsInterface):
         try:
             access_token = await self._get_access_token()
             
-            url = f"{self.pool_management_endpoint}/sessionPools/{pool_id}/sessions"
+            url = f"{self.pool_management_endpoint}/session"
             headers = {
                 "Authorization": f"Bearer {access_token}",
                 "Content-Type": "application/json"
             }
             
             params = {
-                "api-version": "2024-02-02-preview"
+                "api-version": "2025-02-02-preview",
+                "identifier": "testid1"
             }
             
             payload = {
                 "properties": kwargs
             }
             
-            logger.info(f"Creating session in pool: {pool_id}")
+            logger.info(f"Creating session in pool: testid1")
             
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.post(

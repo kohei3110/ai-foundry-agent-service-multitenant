@@ -1,0 +1,414 @@
+name: Deploy Silo Infrastructure
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'silo/infra/**'
+      - 'infra/main.bicep'  # 共通のインフラファイルも監視
+      - 'infra/main.parameters.*.json'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'silo/infra/**'
+      - 'infra/main.bicep'
+      - 'infra/main.parameters.*.json'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+      tenant_id:
+        description: 'Tenant ID for silo deployment'
+        required: true
+        default: 'contoso'
+        type: string
+      force_deploy:
+        description: 'Force deployment even if no changes detected'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.set-env.outputs.environment }}
+      tenant_id: ${{ steps.set-env.outputs.tenant_id }}
+      should_deploy: ${{ steps.check-changes.outputs.should_deploy }}
+      changed_files: ${{ steps.check-changes.outputs.changed_files }}
+      has_infra_changes: ${{ steps.check-changes.outputs.has_infra_changes }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine environment and tenant
+        id: set-env
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "environment=${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
+            echo "tenant_id=${{ github.event.inputs.tenant_id }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.ref }}" == "refs/heads/main" ]; then
+            echo "environment=prod" >> $GITHUB_OUTPUT
+            echo "tenant_id=contoso" >> $GITHUB_OUTPUT
+          elif [ "${{ github.ref }}" == "refs/heads/develop" ]; then
+            echo "environment=staging" >> $GITHUB_OUTPUT
+            echo "tenant_id=contoso" >> $GITHUB_OUTPUT
+          else
+            echo "environment=dev" >> $GITHUB_OUTPUT
+            echo "tenant_id=contoso" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check for infrastructure changes
+        id: check-changes
+        run: |
+          echo "🔍 Checking for infrastructure changes..."
+          
+          # Force deployment if requested via workflow_dispatch
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ] && [ "${{ github.event.inputs.force_deploy }}" == "true" ]; then
+            echo "should_deploy=true" >> $GITHUB_OUTPUT
+            echo "has_infra_changes=true" >> $GITHUB_OUTPUT
+            echo "changed_files=force_deploy" >> $GITHUB_OUTPUT
+            echo "✅ Force deployment requested"
+            exit 0
+          fi
+          
+          # For pull requests, always validate but don't deploy
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            echo "should_deploy=false" >> $GITHUB_OUTPUT
+            echo "has_infra_changes=true" >> $GITHUB_OUTPUT
+            echo "changed_files=pr_validation" >> $GITHUB_OUTPUT
+            echo "📋 Pull request - validation only"
+            exit 0
+          fi
+          
+          # Define infrastructure file patterns for silo
+          INFRA_PATTERNS=(
+            "silo/infra/"
+            "infra/main.bicep"
+            "infra/main.parameters"
+          )
+          
+          # Get the comparison base
+          if [ "${{ github.event_name }}" == "push" ]; then
+            if [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+              BASE_SHA="${{ github.event.before }}"
+            else
+              # For initial push, compare with the previous commit on the same branch
+              BASE_SHA=$(git rev-parse HEAD~1 2>/dev/null || echo "HEAD")
+            fi
+          else
+            BASE_SHA=$(git merge-base origin/${{ github.event.repository.default_branch }} HEAD)
+          fi
+          
+          echo "📊 Comparing changes from $BASE_SHA to ${{ github.sha }}"
+          
+          # Get all changed files
+          CHANGED_FILES=$(git diff --name-only $BASE_SHA..${{ github.sha }} 2>/dev/null || git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
+          
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "⚠️ No changed files detected"
+            echo "should_deploy=false" >> $GITHUB_OUTPUT
+            echo "has_infra_changes=false" >> $GITHUB_OUTPUT
+            echo "changed_files=" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          echo "📁 Changed files:"
+          echo "$CHANGED_FILES" | while read -r file; do
+            [ -n "$file" ] && echo "  - $file"
+          done
+          
+          # Check if any changed files match infrastructure patterns
+          HAS_INFRA_CHANGES=false
+          INFRA_CHANGED_FILES=""
+          
+          for pattern in "${INFRA_PATTERNS[@]}"; do
+            MATCHING_FILES=$(echo "$CHANGED_FILES" | grep "^$pattern" || true)
+            if [ -n "$MATCHING_FILES" ]; then
+              HAS_INFRA_CHANGES=true
+              if [ -n "$INFRA_CHANGED_FILES" ]; then
+                INFRA_CHANGED_FILES="$INFRA_CHANGED_FILES,$MATCHING_FILES"
+              else
+                INFRA_CHANGED_FILES="$MATCHING_FILES"
+              fi
+            fi
+          done
+          
+          # Set outputs
+          if [ "$HAS_INFRA_CHANGES" = "true" ]; then
+            echo "should_deploy=true" >> $GITHUB_OUTPUT
+            echo "has_infra_changes=true" >> $GITHUB_OUTPUT
+            echo "changed_files=$INFRA_CHANGED_FILES" >> $GITHUB_OUTPUT
+            echo "✅ Infrastructure changes detected:"
+            echo "$INFRA_CHANGED_FILES" | tr ',' '\n' | while read -r file; do
+              [ -n "$file" ] && echo "  📄 $file"
+            done
+          else
+            echo "should_deploy=false" >> $GITHUB_OUTPUT
+            echo "has_infra_changes=false" >> $GITHUB_OUTPUT
+            echo "changed_files=" >> $GITHUB_OUTPUT
+            echo "ℹ️ No infrastructure changes detected - deployment will be skipped"
+          fi
+  skip-deployment:
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.should_deploy == 'false' && needs.detect-changes.outputs.has_infra_changes == 'false'
+    steps:
+      - name: Skip deployment notification
+        run: |
+          echo "⏭️ Infrastructure deployment skipped - no relevant changes detected"
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Deployment Skipped ⏭️" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "No infrastructure changes were detected in this commit." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Monitored paths:" >> $GITHUB_STEP_SUMMARY
+          echo "- \`silo/infra/**\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`infra/main.bicep\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`infra/main.parameters.*.json\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "To force deployment, use the manual workflow trigger with 'Force deployment' option." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Workflow Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Validation**: Skipped" >> $GITHUB_STEP_SUMMARY
+          echo "- **Deployment**: Skipped" >> $GITHUB_STEP_SUMMARY
+          echo "- **Architecture**: Silo (Tenant-Isolated)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Triggered by**: ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+
+  validate-bicep:
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.has_infra_changes == 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Validate Bicep templates
+        working-directory: ./silo/infra
+        run: |
+          echo "Validating Bicep templates..."
+          
+          # Find all .bicep files and validate them
+          for bicep_file in $(find . -name "*.bicep" -type f); do
+            echo "Validating $bicep_file"
+            az bicep build --file "$bicep_file" --stdout > /dev/null
+            if [ $? -eq 0 ]; then
+              echo "✅ $bicep_file is valid"
+            else
+              echo "❌ $bicep_file validation failed"
+              exit 1
+            fi
+          done
+
+      - name: What-if deployment (dry-run)
+        if: needs.detect-changes.outputs.has_infra_changes == 'true'
+        working-directory: ./silo/infra
+        run: |
+          ENVIRONMENT="${{ needs.detect-changes.outputs.environment }}"
+          TENANT_ID="${{ needs.detect-changes.outputs.tenant_id }}"
+          RESOURCE_GROUP="rg-fas-silo-${TENANT_ID}-${ENVIRONMENT}"
+          
+          echo "Running what-if analysis for environment: $ENVIRONMENT, tenant: $TENANT_ID"
+          
+          # Check if main.bicep exists
+          if [ -f "main.bicep" ]; then
+            # Check for tenant-specific parameters file first, then environment-specific
+            if [ -f "main.parameters.${TENANT_ID}.${ENVIRONMENT}.json" ]; then
+              PARAMS_FILE="main.parameters.${TENANT_ID}.${ENVIRONMENT}.json"
+            elif [ -f "main.parameters.${ENVIRONMENT}.json" ]; then
+              PARAMS_FILE="main.parameters.${ENVIRONMENT}.json"
+            elif [ -f "main.parameters.json" ]; then
+              PARAMS_FILE="main.parameters.json"
+            else
+              echo "❌ No parameters file found"
+              exit 1
+            fi
+            
+            echo "Using parameters file: $PARAMS_FILE"
+            
+            # Create resource group if it doesn't exist
+            az group create --name "$RESOURCE_GROUP" --location "Japan East" --only-show-errors || true
+            
+            # Run what-if analysis
+            az deployment group what-if \
+              --resource-group "$RESOURCE_GROUP" \
+              --template-file "main.bicep" \
+              --parameters "@$PARAMS_FILE" tenantId="$TENANT_ID" environment="$ENVIRONMENT" \
+              --result-format "FullResourcePayloads"
+          else
+            echo "❌ main.bicep not found"
+            exit 1
+          fi
+          
+  deploy-infrastructure:
+    runs-on: ubuntu-latest
+    needs: [detect-changes, validate-bicep]
+    if: needs.detect-changes.outputs.should_deploy == 'true' && github.event_name != 'pull_request'
+    environment: 
+      name: silo-${{ needs.detect-changes.outputs.tenant_id }}-${{ needs.detect-changes.outputs.environment }}
+      url: https://portal.azure.com/#@${{ vars.AZURE_TENANT_ID }}/resource/subscriptions/${{ vars.AZURE_SUBSCRIPTION_ID }}/resourceGroups/rg-fas-silo-${{ needs.detect-changes.outputs.tenant_id }}-${{ needs.detect-changes.outputs.environment }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy Infrastructure
+        working-directory: ./silo/infra
+        run: |
+          ENVIRONMENT="${{ needs.detect-changes.outputs.environment }}"
+          TENANT_ID="${{ needs.detect-changes.outputs.tenant_id }}"
+          RESOURCE_GROUP="rg-fas-silo-${TENANT_ID}-${ENVIRONMENT}"
+          DEPLOYMENT_NAME="deploy-silo-${TENANT_ID}-${ENVIRONMENT}-$(date +%Y%m%d-%H%M%S)"
+          
+          echo "🚀 Deploying to environment: $ENVIRONMENT"
+          echo "👤 Tenant ID: $TENANT_ID"
+          echo "📦 Resource Group: $RESOURCE_GROUP"
+          echo "🏷️ Deployment Name: $DEPLOYMENT_NAME"
+          echo "📁 Changed files: ${{ needs.detect-changes.outputs.changed_files }}"
+          
+          # Determine parameters file (tenant-specific > environment-specific > default)
+          if [ -f "main.parameters.${TENANT_ID}.${ENVIRONMENT}.json" ]; then
+            PARAMS_FILE="main.parameters.${TENANT_ID}.${ENVIRONMENT}.json"
+          elif [ -f "main.parameters.${ENVIRONMENT}.json" ]; then
+            PARAMS_FILE="main.parameters.${ENVIRONMENT}.json"
+          elif [ -f "main.parameters.json" ]; then
+            PARAMS_FILE="main.parameters.json"
+          else
+            echo "❌ No parameters file found"
+            exit 1
+          fi
+          
+          echo "Using parameters file: $PARAMS_FILE"
+          
+          # Create resource group
+          echo "Creating resource group..."
+          az group create \
+            --name "$RESOURCE_GROUP" \
+            --location "Japan East" \
+            --tags \
+              environment="$ENVIRONMENT" \
+              architecture="silo" \
+              tenantId="$TENANT_ID" \
+              deployedBy="github-actions" \
+              deploymentId="$DEPLOYMENT_NAME"
+          
+          # Deploy infrastructure
+          echo "Deploying infrastructure..."
+          az deployment group create \
+            --resource-group "$RESOURCE_GROUP" \
+            --template-file "main.bicep" \
+            --parameters "@$PARAMS_FILE" tenantId="$TENANT_ID" environment="$ENVIRONMENT" \
+            --name "$DEPLOYMENT_NAME" \
+            --verbose
+
+      - name: Get deployment outputs
+        if: success()
+        working-directory: ./silo/infra
+        run: |
+          ENVIRONMENT="${{ needs.detect-changes.outputs.environment }}"
+          TENANT_ID="${{ needs.detect-changes.outputs.tenant_id }}"
+          RESOURCE_GROUP="rg-fas-silo-${TENANT_ID}-${ENVIRONMENT}"
+          
+          echo "📊 Getting deployment outputs..."
+          az deployment group show \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$(az deployment group list --resource-group "$RESOURCE_GROUP" --query '[0].name' -o tsv)" \
+            --query 'properties.outputs' \
+            --output table
+
+      - name: Validate deployment
+        if: success()
+        run: |
+          ENVIRONMENT="${{ needs.detect-changes.outputs.environment }}"
+          TENANT_ID="${{ needs.detect-changes.outputs.tenant_id }}"
+          RESOURCE_GROUP="rg-fas-silo-${TENANT_ID}-${ENVIRONMENT}"
+          
+          echo "✅ Validating deployment..."
+          
+          # Check resource group exists
+          if az group show --name "$RESOURCE_GROUP" --output none 2>/dev/null; then
+            echo "✅ Resource group exists"
+          else
+            echo "❌ Resource group not found"
+            exit 1
+          fi
+          
+          # List deployed resources
+          echo "Deployed resources:"
+          az resource list --resource-group "$RESOURCE_GROUP" --output table
+
+  post-deployment:
+    runs-on: ubuntu-latest
+    needs: [detect-changes, deploy-infrastructure, skip-deployment]
+    if: always() && (needs.deploy-infrastructure.result != 'skipped' || needs.skip-deployment.result == 'success')
+    steps:
+      - name: Post-deployment summary
+        run: |
+          ENVIRONMENT="${{ needs.detect-changes.outputs.environment }}"
+          TENANT_ID="${{ needs.detect-changes.outputs.tenant_id }}"
+          SHOULD_DEPLOY="${{ needs.detect-changes.outputs.should_deploy }}"
+          DEPLOY_RESULT="${{ needs.deploy-infrastructure.result }}"
+          
+          echo "## Deployment Summary 📊" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment**: $ENVIRONMENT" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tenant**: $TENANT_ID" >> $GITHUB_STEP_SUMMARY
+          echo "- **Architecture**: Silo (Tenant-Isolated)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Should Deploy**: $SHOULD_DEPLOY" >> $GITHUB_STEP_SUMMARY
+          echo "- **Deploy Status**: ${DEPLOY_RESULT:-skipped}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Changed Files**: ${{ needs.detect-changes.outputs.changed_files }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Resource Group**: rg-fas-silo-$TENANT_ID-$ENVIRONMENT" >> $GITHUB_STEP_SUMMARY
+          echo "- **Deployed by**: ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "$SHOULD_DEPLOY" == "false" ]; then
+            echo "⏭️ **Deployment was skipped - no infrastructure changes detected**" >> $GITHUB_STEP_SUMMARY
+          elif [ "$DEPLOY_RESULT" == "success" ]; then
+            echo "🎉 **Deployment completed successfully!**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
+            echo "- Check the [Azure Portal](https://portal.azure.com/#@${{ vars.AZURE_TENANT_ID }}/resource/subscriptions/${{ vars.AZURE_SUBSCRIPTION_ID }}/resourceGroups/rg-fas-silo-$TENANT_ID-$ENVIRONMENT)" >> $GITHUB_STEP_SUMMARY
+            echo "- Verify application deployment status" >> $GITHUB_STEP_SUMMARY
+            echo "- Run integration tests" >> $GITHUB_STEP_SUMMARY
+            echo "- Configure tenant-specific settings" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Deployment failed!**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Please check the logs and resolve any issues before retrying." >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Notify on failure
+        if: failure() && needs.detect-changes.outputs.should_deploy == 'true'
+        run: |
+          echo "🚨 Silo infrastructure deployment failed for tenant: ${{ needs.detect-changes.outputs.tenant_id }}, environment: ${{ needs.detect-changes.outputs.environment }}"
+          echo "Please check the workflow logs for details."

@@ -50,7 +50,7 @@ class SessionResponse(BaseModel):
 def get_dynamic_sessions_service() -> DynamicSessionsInterface:
     """Dependency injection for dynamic sessions service"""
     # These would typically come from environment variables or configuration
-    base_url = getattr(settings, 'container_apps_dynamic_sessions_base_url', 
+    base_url = getattr(settings, 'container_apps_pool_management_endpoint', 
                       'https://management.azure.com/subscriptions/{subscription_id}/resourceGroups/{resource_group}/providers/Microsoft.App/sessionPools/{pool_name}')
     pool_management_endpoint = getattr(settings, 'container_apps_pool_management_endpoint',
                                      'https://management.azure.com/subscriptions/{subscription_id}/resourceGroups/{resource_group}/providers/Microsoft.App')

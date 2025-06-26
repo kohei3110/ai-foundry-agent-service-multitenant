@@ -284,6 +284,7 @@ jobs:
               COMMIT_SHA="${{ github.sha }}" \
               CONTAINER_APPS_SUBSCRIPTION_ID="$AZURE_SUBSCRIPTION_ID" \
               CONTAINER_APPS_RESOURCE_GROUP="$RESOURCE_GROUP" \
+              CONTAINER_APPS_POOL_MANAGEMENT_ENDPOINT="https://contoso-pool.ambitiousbush-3bf2b826.eastus2.azurecontainerapps.io" \
             --revision-suffix "$(date +%Y%m%d-%H%M%S)" \
             --output table
           

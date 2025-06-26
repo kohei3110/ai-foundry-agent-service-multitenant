@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import settings
 from ..middleware.logging import LoggingMiddleware
 from ..middleware.cors import CORSConfig
-from ..routers import root, health, blob_storage
+from ..routers import root, health, blob_storage, dynamic_sessions
 
 
 def create_app() -> FastAPI:
@@ -43,5 +43,6 @@ def create_app() -> FastAPI:
     app.include_router(root.router)
     app.include_router(health.router)
     app.include_router(blob_storage.router)
+    app.include_router(dynamic_sessions.router)
     
     return app

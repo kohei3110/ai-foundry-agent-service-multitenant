@@ -40,6 +40,12 @@ class Settings(BaseSettings):
     
     # Azure Authentication settings
     azure_client_id: str = ""
+    
+    # Container Apps Dynamic Sessions settings
+    container_apps_dynamic_sessions_base_url: str = ""
+    container_apps_pool_management_endpoint: str = ""
+    container_apps_subscription_id: str = ""
+    container_apps_resource_group: str = ""
 
 
 # Global settings instance

@@ -62,7 +62,8 @@ src/
 │   ├── cosmos_service.py       # Cosmos DB操作
 │   ├── search_service.py       # AI Search操作
 │   ├── storage_service.py      # Blob Storage操作
-│   └── keyvault_service.py     # Key Vault操作
+│   ├── keyvault_service.py     # Key Vault操作
+│   └── dynamic_sessions_service.py  # Container Apps Dynamic Sessions操作
 ├── api/
 │   ├── __init__.py
 │   ├── deps.py                 # 依存性注入
@@ -71,7 +72,8 @@ src/
 │       ├── __init__.py
 │       ├── agents.py           # エージェント操作API
 │       ├── threads.py          # スレッド操作API
-│       └── files.py            # ファイル操作API
+│       ├── files.py            # ファイル操作API
+│       └── dynamic_sessions.py # 動的セッション操作API
 ├── utils/
 │   ├── __init__.py
 │   ├── telemetry.py           # テレメトリ・監視
@@ -133,6 +135,12 @@ class Settings(BaseSettings):
     # セキュリティ設定
     cors_origins: List[str] = Field(default_factory=lambda: ["*"])
     debug: bool = Field(False, env="DEBUG")
+    
+    # Container Apps Dynamic Sessions設定
+    container_apps_dynamic_sessions_base_url: str = Field(..., env="CONTAINER_APPS_DYNAMIC_SESSIONS_BASE_URL")
+    container_apps_pool_management_endpoint: str = Field(..., env="CONTAINER_APPS_POOL_MANAGEMENT_ENDPOINT")
+    container_apps_subscription_id: str = Field(..., env="CONTAINER_APPS_SUBSCRIPTION_ID")
+    container_apps_resource_group: str = Field(..., env="CONTAINER_APPS_RESOURCE_GROUP")
     
     class Config:
         env_file = ".env"
@@ -767,6 +775,299 @@ class AgentService:
             raise
 ```
 
+### 4.7 Dynamic Sessions Service (`services/dynamic_sessions_service.py`)
+
+```python
+from typing import Dict, Any, Optional, List
+import httpx
+import json
+import time
+from azure.identity import DefaultAzureCredential
+from core.tenant import TenantContext, require_tenant
+from core.config import settings
+import logging
+
+logger = logging.getLogger(__name__)
+
+class DynamicSessionsService:
+    """Container Apps Dynamic Sessions管理サービス
+    
+    ユーザー割り当てマネージドIDを使用して認証を行い、
+    テナント境界を維持しながら動的セッションを管理します。
+    """
+    
+    def __init__(self):
+        self.credential = DefaultAzureCredential()
+        self.base_url = settings.container_apps_dynamic_sessions_base_url
+        self.pool_management_endpoint = settings.container_apps_pool_management_endpoint
+        self.subscription_id = settings.container_apps_subscription_id
+        self.resource_group = settings.container_apps_resource_group
+        self._access_token = None
+        self._token_expires_at = None
+    
+    async def _get_access_token(self) -> str:
+        """Azure管理APIのアクセストークンを取得"""
+        now = time.time()
+        
+        if self._access_token and self._token_expires_at and now < self._token_expires_at:
+            return self._access_token
+        
+        try:
+            token = await self.credential.get_token("https://management.azure.com/.default")
+            self._access_token = token.token
+            self._token_expires_at = token.expires_on
+            return self._access_token
+        except Exception as e:
+            logger.error(f"Failed to get access token: {e}")
+            raise
+    
+    @require_tenant
+    async def create_session(
+        self, 
+        session_pool_name: str, 
+        identifier: Optional[str] = None,
+        tenant_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """動的セッション作成
+        
+        Args:
+            session_pool_name: セッションプール名
+            identifier: セッション識別子（オプション）
+            tenant_id: テナントID（内部使用）
+        
+        Returns:
+            作成されたセッション情報
+        """
+        tenant_id = tenant_id or TenantContext.get_tenant()
+        
+        try:
+            access_token = await self._get_access_token()
+            
+            url = f"{self.pool_management_endpoint}/subscriptions/{self.subscription_id}/resourceGroups/{self.resource_group}/providers/Microsoft.App/sessionPools/{session_pool_name}/sessions?api-version=2024-02-02-preview"
+            
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "properties": {
+                    "sessionPoolName": session_pool_name,
+                    "metadata": {
+                        "tenantId": tenant_id,
+                        "createdAt": time.time()
+                    }
+                }
+            }
+            
+            if identifier:
+                payload["properties"]["identifier"] = identifier
+            
+            async with httpx.AsyncClient() as client:
+                response = await client.post(url, headers=headers, json=payload)
+                response.raise_for_status()
+                
+                result = response.json()
+                logger.info(f"Created session for tenant {tenant_id}: {result.get('id')}")
+                return result
+                
+        except Exception as e:
+            logger.error(f"Failed to create session for tenant {tenant_id}: {e}")
+            raise
+    
+    @require_tenant
+    async def execute_code(
+        self,
+        session_id: str,
+        code: str,
+        execution_type: str = "synchronous",
+        code_input_type: str = "inline",
+        tenant_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """セッションでコード実行
+        
+        Args:
+            session_id: セッションID
+            code: 実行するPythonコード
+            execution_type: 実行タイプ（synchronous/asynchronous）
+            code_input_type: コード入力タイプ（inline/file）
+            tenant_id: テナントID（内部使用）
+        
+        Returns:
+            実行結果
+        """
+        tenant_id = tenant_id or TenantContext.get_tenant()
+        
+        try:
+            # セッションのテナント境界チェック
+            session_status = await self.get_session_status(session_id, tenant_id)
+            if not session_status or session_status.get("properties", {}).get("metadata", {}).get("tenantId") != tenant_id:
+                logger.warning(f"Tenant {tenant_id} attempted to access session {session_id}")
+                raise PermissionError("Session access denied")
+            
+            access_token = await self._get_access_token()
+            
+            url = f"{self.base_url}/code/execute?api-version=2024-02-02-preview&identifier={session_id}"
+            
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "properties": {
+                    "codeInputType": code_input_type,
+                    "executionType": execution_type,
+                    "code": code
+                }
+            }
+            
+            start_time = time.time()
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(url, headers=headers, json=payload)
+                response.raise_for_status()
+                
+                result = response.json()
+                execution_time_ms = int((time.time() - start_time) * 1000)
+                
+                logger.info(f"Executed code for tenant {tenant_id} in session {session_id}")
+                
+                return {
+                    "status": "success",
+                    "result": result,
+                    "execution_time_ms": execution_time_ms
+                }
+                
+        except Exception as e:
+            logger.error(f"Failed to execute code for tenant {tenant_id}: {e}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "execution_time_ms": int((time.time() - start_time) * 1000) if 'start_time' in locals() else None
+            }
+    
+    @require_tenant
+    async def get_session_status(
+        self,
+        session_id: str,
+        tenant_id: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """セッション状態取得
+        
+        Args:
+            session_id: セッションID
+            tenant_id: テナントID（内部使用）
+        
+        Returns:
+            セッション状態情報
+        """
+        tenant_id = tenant_id or TenantContext.get_tenant()
+        
+        try:
+            access_token = await self._get_access_token()
+            
+            url = f"{self.base_url}/sessions/{session_id}?api-version=2024-02-02-preview"
+            
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json"
+            }
+            
+            async with httpx.AsyncClient() as client:
+                response = await client.get(url, headers=headers)
+                
+                if response.status_code == 404:
+                    return None
+                
+                response.raise_for_status()
+                return response.json()
+                
+        except Exception as e:
+            logger.error(f"Failed to get session status for tenant {tenant_id}: {e}")
+            return None
+    
+    @require_tenant
+    async def delete_session(
+        self,
+        session_id: str,
+        tenant_id: Optional[str] = None
+    ) -> bool:
+        """セッション削除
+        
+        Args:
+            session_id: セッションID
+            tenant_id: テナントID（内部使用）
+        
+        Returns:
+            削除成功の可否
+        """
+        tenant_id = tenant_id or TenantContext.get_tenant()
+        
+        try:
+            # セッションのテナント境界チェック
+            session_status = await self.get_session_status(session_id, tenant_id)
+            if not session_status or session_status.get("properties", {}).get("metadata", {}).get("tenantId") != tenant_id:
+                logger.warning(f"Tenant {tenant_id} attempted to delete session {session_id}")
+                raise PermissionError("Session access denied")
+            
+            access_token = await self._get_access_token()
+            
+            url = f"{self.base_url}/sessions/{session_id}?api-version=2024-02-02-preview"
+            
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json"
+            }
+            
+            async with httpx.AsyncClient() as client:
+                response = await client.delete(url, headers=headers)
+                response.raise_for_status()
+                
+                logger.info(f"Deleted session {session_id} for tenant {tenant_id}")
+                return True
+                
+        except Exception as e:
+            logger.error(f"Failed to delete session for tenant {tenant_id}: {e}")
+            return False
+    
+    @require_tenant
+    async def list_session_pools(
+        self,
+        tenant_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """セッションプール一覧取得
+        
+        Args:
+            tenant_id: テナントID（内部使用）
+        
+        Returns:
+            利用可能なセッションプール一覧
+        """
+        tenant_id = tenant_id or TenantContext.get_tenant()
+        
+        try:
+            access_token = await self._get_access_token()
+            
+            url = f"{self.pool_management_endpoint}/subscriptions/{self.subscription_id}/resourceGroups/{self.resource_group}/providers/Microsoft.App/sessionPools?api-version=2024-02-02-preview"
+            
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json"
+            }
+            
+            async with httpx.AsyncClient() as client:
+                response = await client.get(url, headers=headers)
+                response.raise_for_status()
+                
+                result = response.json()
+                logger.info(f"Listed session pools for tenant {tenant_id}")
+                return result
+                
+        except Exception as e:
+            logger.error(f"Failed to list session pools for tenant {tenant_id}: {e}")
+            raise
+
 ## 5. API エンドポイント
 
 ### 5.1 エージェント操作API (`api/routes/agents.py`)
@@ -870,6 +1171,134 @@ async def create_run(
         instructions=request.instructions,
         metadata=request.metadata
     )
+```
+
+### 5.2 動的セッション操作API (`api/routes/dynamic_sessions.py`)
+
+```python
+from fastapi import APIRouter, Depends, HTTPException
+from typing import Dict, Any, Optional
+from pydantic import BaseModel
+from core.security import get_current_user
+from services.dynamic_sessions_service import DynamicSessionsService
+
+router = APIRouter(prefix="/dynamic-sessions", tags=["dynamic-sessions"])
+
+class ExecuteCodeRequest(BaseModel):
+    code: str
+    session_id: str
+    execution_type: str = "synchronous"
+    code_input_type: str = "inline"
+
+class CreateSessionRequest(BaseModel):
+    session_pool_name: str
+    identifier: Optional[str] = None
+
+class ExecuteCodeResponse(BaseModel):
+    status: str
+    result: Optional[str] = None
+    error: Optional[str] = None
+    execution_time_ms: Optional[int] = None
+
+@router.post("/sessions", response_model=Dict[str, Any])
+async def create_session(
+    request: CreateSessionRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    sessions_service: DynamicSessionsService = Depends()
+):
+    """動的セッション作成
+    
+    Container Apps Dynamic Sessionsで新しいセッションを作成します。
+    ユーザー割り当てマネージドIDを使用して認証を行います。
+    """
+    try:
+        session = await sessions_service.create_session(
+            session_pool_name=request.session_pool_name,
+            identifier=request.identifier,
+            tenant_id=current_user["tenant_id"]
+        )
+        return session
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"セッション作成エラー: {str(e)}")
+
+@router.post("/sessions/{session_id}/execute", response_model=ExecuteCodeResponse)
+async def execute_code(
+    session_id: str,
+    request: ExecuteCodeRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    sessions_service: DynamicSessionsService = Depends()
+):
+    """動的セッションでコード実行
+    
+    指定されたセッションでPythonコードを実行します。
+    実行結果、エラー情報、実行時間を返します。
+    """
+    try:
+        result = await sessions_service.execute_code(
+            session_id=session_id,
+            code=request.code,
+            execution_type=request.execution_type,
+            code_input_type=request.code_input_type,
+            tenant_id=current_user["tenant_id"]
+        )
+        return ExecuteCodeResponse(**result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"コード実行エラー: {str(e)}")
+
+@router.get("/sessions/{session_id}/status", response_model=Dict[str, Any])
+async def get_session_status(
+    session_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    sessions_service: DynamicSessionsService = Depends()
+):
+    """セッション状態取得
+    
+    指定されたセッションの現在の状態を取得します。
+    """
+    try:
+        status = await sessions_service.get_session_status(
+            session_id=session_id,
+            tenant_id=current_user["tenant_id"]
+        )
+        return status
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"セッション状態取得エラー: {str(e)}")
+
+@router.delete("/sessions/{session_id}")
+async def delete_session(
+    session_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    sessions_service: DynamicSessionsService = Depends()
+):
+    """セッション削除
+    
+    指定されたセッションを削除し、リソースを解放します。
+    """
+    try:
+        await sessions_service.delete_session(
+            session_id=session_id,
+            tenant_id=current_user["tenant_id"]
+        )
+        return {"message": "セッションが正常に削除されました"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"セッション削除エラー: {str(e)}")
+
+@router.get("/pools", response_model=Dict[str, Any])
+async def list_session_pools(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    sessions_service: DynamicSessionsService = Depends()
+):
+    """セッションプール一覧取得
+    
+    利用可能なセッションプールの一覧を取得します。
+    """
+    try:
+        pools = await sessions_service.list_session_pools(
+            tenant_id=current_user["tenant_id"]
+        )
+        return pools
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"セッションプール取得エラー: {str(e)}")
 ```
 
 ## 6. セキュリティ実装
@@ -1213,6 +1642,7 @@ class TestTenantIsolation:
 ```
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
+httpx==0.25.2
 azure-ai-projects==1.0.0b1
 azure-cosmos==4.5.1
 azure-search-documents==11.5.1

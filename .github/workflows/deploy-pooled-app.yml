@@ -282,7 +282,7 @@ jobs:
               BUILD_NUMBER="${{ github.run_number }}" \
               COMMIT_SHA="${{ github.sha }}" \
               CONTAINER_APPS_SUBSCRIPTION_ID="${{ env.AZURE_SUBSCRIPTION_ID }}" \
-              CONTAINER_APPS_RESOURCE_GROUP="$RESOURCE_GROUP" 
+              CONTAINER_APPS_RESOURCE_GROUP="$RESOURCE_GROUP" \
             --revision-suffix "$(date +%Y%m%d-%H%M%S)" \
             --output table
           

@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tenant-b-app
+  namespace: tenant-b
+  labels:
+    azure.workload.identity/use: "true"  # Required for workload identity
+spec:
+  selector:
+    matchLabels:
+      tenantid: tenantb
+  template:
+    metadata:
+      labels:
+        tenantid: tenantb
+        azure.workload.identity/use: "true"  # Must be on pod template
+    spec:
+      serviceAccountName: storage-access-sa-tenant-b  # Reference your service account
+      nodeSelector:
+        tenantid: tenanta
+      tolerations:
+      - key: "tenantid"
+        operator: "Equal"
+        value: "tenantb"
+        effect: "NoSchedule"
+      containers:
+      - name: semantic-ui
+        image: <repo_name>.azurecr.io/multiteant-ai:1
+        env:
+          - name: TENANT_ID
+            value: "tenantb"  # Environment variable to identify tenant
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+ name: tenant-b-streamlit-service
+ namespace: tenant-b
+ labels:
+   run: app-deployment
+spec:
+ ports:
+ - port: 8501
+   targetPort: 8501
+   protocol: TCP
+ selector:
+   tenantid: tenanta

@@ -1,0 +1,5 @@
+azure-identity
+azure-storage-blob
+semantic-kernel
+azure-ai-projects
+streamlit

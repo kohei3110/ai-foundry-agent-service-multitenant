@@ -22,7 +22,7 @@ docker push <repo name>.azurecr.io/multitenant-ai:latest
 ```yaml
 containers:
     - name: semantic-ui
-    image: <repo_name>.azurecr.io/multiteant-ai:latest
+    image: <repo_name>.azurecr.io/multitenant-ai:latest
 ```
 
 # Deploy the manifest file

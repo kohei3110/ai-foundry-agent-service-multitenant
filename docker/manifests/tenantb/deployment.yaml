@@ -17,7 +17,7 @@ spec:
     spec:
       serviceAccountName: storage-access-sa-tenant-b  # Reference your service account
       nodeSelector:
-        tenantid: tenanta
+        tenantid: tenantb
       tolerations:
       - key: "tenantid"
         operator: "Equal"
@@ -25,7 +25,7 @@ spec:
         effect: "NoSchedule"
       containers:
       - name: semantic-ui
-        image: <repo_name>.azurecr.io/multiteant-ai:1
+        image: <repo_name>.azurecr.io/multitenant-ai:latest
         env:
           - name: TENANT_ID
             value: "tenantb"  # Environment variable to identify tenant
@@ -44,4 +44,4 @@ spec:
    targetPort: 8501
    protocol: TCP
  selector:
-   tenantid: tenanta
+   tenantid: tenantb

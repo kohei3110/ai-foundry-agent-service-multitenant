@@ -25,7 +25,7 @@ spec:
         effect: "NoSchedule"
       containers:
       - name: semantic-ui
-        image: <repo_name>.azurecr.io/multiteant-ai:latest
+        image: <repo_name>.azurecr.io/multitenant-ai:latest
         env:
           - name: TENANT_ID
             value: "tenanta"  # Environment variable to identify tenant

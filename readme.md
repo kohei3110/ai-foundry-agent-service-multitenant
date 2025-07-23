@@ -1,0 +1,1 @@
+# Run through the multitenancu_aks jupyter notebook first to setup your cluster with the appropriate configurations and permissions.

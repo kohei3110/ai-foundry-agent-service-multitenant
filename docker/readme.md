@@ -40,6 +40,22 @@ az role assignment create \
   --role "Cognitive Services OpenAI User" \
   --scope /subscriptions/<SUBSCRIPTION_ID>/resourceGroups/<RESOURCEGROUP>/providers/Microsoft.CognitiveServices/accounts/<AI FOUNDRY ACCOUNT NAME>
 ```
+## Update tools.py with your own AI Project endpoint and blob storage account.
+
+```yaml
+project_client = AIProjectClient(
+    endpoint="https://<YOUR_PROJECT>.services.ai.azure.com/api/projects/firstProject",
+    credential=DefaultAzureCredential()
+)
+```
+
+```yaml
+blob_service_client = BlobServiceClient(
+    account_url=<YOUR_BLOB_URL>,
+    credential=WorkloadIdentityCredential()
+)
+```
+
 ## Create the docker image
 
 Open a terminal in your local system. Substitute with your own repository.
